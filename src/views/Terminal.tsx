@@ -88,7 +88,7 @@ export default function Terminal() {
                   <h2 className="font-display font-bold text-[19px] text-fog-100">{s.selected}</h2>
                   <span className="lbl !text-[9.5px] px-1.5 py-0.5 rounded" style={{ background: "#111b30", border: "1px solid #1c2942" }}>{meta.name}</span>
                 </div>
-                <p className="text-[11px] text-fog-500 num">ATR(14) {a14.toFixed(2)} · candle ≈5s</p>
+                <p className="text-[11px] text-fog-500 num">ATR(14) {a14.toFixed(2)} · candle ≈5s · drag to pan · wheel to zoom · dbl-click = live</p>
               </div>
               <div className="flex items-baseline gap-2.5 ml-auto">
                 <Flash value={m.price} format={(n) => fmtPx(n, n >= 1000 ? 0 : 2)} className="text-[26px] font-semibold text-fog-100" />

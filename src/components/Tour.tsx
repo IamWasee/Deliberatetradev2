@@ -61,7 +61,7 @@ const WALKTHROUGH: Step[] = [
   {
     id: "chart", target: '[data-tour="chart"]', view: "terminal",
     title: "The chart",
-    body: "Each candle = 6 ticks of price. Green means buyers won that candle, red means sellers. Hover for exact OHLC. When you're in a trade, your ENTRY (white), STOP (red) and TARGET (green) lines are drawn right on it. The REGIME chip tells you if the market is trending, ranging or chopping — trade the regime you're in, not the one you wish for.",
+    body: "Each candle = 6 ticks of price. Green means buyers won that candle, red means sellers. Hover for exact OHLC. Drag sideways to scroll back through history, use the mouse wheel (or the −/+ buttons) to zoom, and double-click to snap back to the live edge. When you're in a trade, your ENTRY (white), STOP (red) and TARGET (green) lines are drawn right on it. The REGIME chip tells you if the market is trending, ranging or chopping — trade the regime you're in, not the one you wish for.",
   },
   {
     id: "ticket", target: '[data-tour="ticket"]', view: "terminal",

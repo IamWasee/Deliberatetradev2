@@ -3,12 +3,48 @@ import type { Candle } from "../lib/types";
 
 interface Line { price: number; color: string; label: string; dash?: number[] }
 
+const MIN_VIS = 24;
+const MAX_VIS = 170;
+const AXIS_W = 58;
+
 export function CandleChart({ candles, lines = [], height = 300, live }: {
   candles: Candle[]; lines?: Line[]; height?: number; live?: number;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ x: number; y: number; c: Candle } | null>(null);
+  const [visible, setVisible] = useState(110);           // candles in view
+  const [offset, setOffset] = useState(0);               // bars back from the live edge
+  const [dragging, setDragging] = useState(false);
+
+  const vis = Math.max(MIN_VIS, Math.min(visible, candles.length));
+  const maxOffset = Math.max(0, candles.length - vis);
+  const off = Math.min(offset, maxOffset);
+  const atLive = off === 0;
+  const data = candles.slice(candles.length - vis - off, candles.length - off);
+
+  const maxOffRef = useRef(maxOffset); maxOffRef.current = maxOffset;
+  const cppRef = useRef(0.25); // candles per pixel, kept fresh by draw()
+  const dragRef = useRef<{ x: number } | null>(null);
+
+  const clampOff = (o: number) => Math.max(0, Math.min(o, maxOffRef.current));
+
+  /* wheel = zoom (vertical) · pan (shift or horizontal) — non-passive so we own the gesture */
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        setOffset((o) => Math.max(0, Math.min(o + (e.deltaX || e.deltaY) * cppRef.current, maxOffRef.current)));
+      } else {
+        const dir = e.deltaY > 0 ? 1 : -1; // scroll down → zoom out
+        setVisible((v) => Math.max(MIN_VIS, Math.min(MAX_VIS, Math.round(v * (1 + dir * 0.15)))));
+      }
+    };
+    wrap.addEventListener("wheel", onWheel, { passive: false });
+    return () => wrap.removeEventListener("wheel", onWheel);
+  }, []);
 
   useEffect(() => {
     const cv = ref.current, wrap = wrapRef.current;
@@ -24,16 +60,14 @@ export function CandleChart({ candles, lines = [], height = 300, live }: {
       ctx.scale(dpr, dpr);
       ctx.clearRect(0, 0, W, H);
 
-      const data = candles.slice(-110);
       if (!data.length) return;
-      const axisW = 58;
-      const padT = 12, padB = 18;
-      const chartW = W - axisW;
+      const chartW = W - AXIS_W;
+      cppRef.current = data.length / Math.max(1, chartW);
       let min = Math.min(...data.map((c) => c.l), ...lines.map((l) => l.price));
       let max = Math.max(...data.map((c) => c.h), ...lines.map((l) => l.price));
       const pad = (max - min) * 0.08 || 1;
       min -= pad; max += pad;
-      const y = (p: number) => padT + (1 - (p - min) / (max - min)) * (H - padT - padB);
+      const y = (p: number) => 12 + (1 - (p - min) / (max - min)) * (H - 12 - 18);
       const bw = chartW / data.length;
 
       // grid + axis labels
@@ -61,7 +95,7 @@ export function CandleChart({ candles, lines = [], height = 300, live }: {
         ctx.fillRect(cx - bodyW / 2, Math.min(yo, yc), bodyW, Math.max(1.4, Math.abs(yc - yo)));
       });
 
-      // bracket lines
+      // bracket lines (price space — always valid)
       lines.forEach((l) => {
         if (l.price < min || l.price > max) return;
         const yy = y(l.price);
@@ -80,8 +114,8 @@ export function CandleChart({ candles, lines = [], height = 300, live }: {
         ctx.fillText(txt, chartW - tw - 7, yy);
       });
 
-      // last price
-      if (live !== undefined) {
+      // live price line only while watching the live edge
+      if (atLive && live !== undefined && live >= min && live <= max) {
         const yy = y(live);
         ctx.strokeStyle = "rgba(238,243,250,0.28)";
         ctx.setLineDash([2, 3]);
@@ -90,7 +124,7 @@ export function CandleChart({ candles, lines = [], height = 300, live }: {
       }
 
       // crosshair
-      if (hover) {
+      if (hover && !dragRef.current) {
         ctx.strokeStyle = "rgba(147,163,186,0.3)";
         ctx.setLineDash([3, 3]);
         ctx.beginPath(); ctx.moveTo(hover.x, 0); ctx.lineTo(hover.x, H); ctx.stroke();
@@ -101,29 +135,71 @@ export function CandleChart({ candles, lines = [], height = 300, live }: {
     const ro = new ResizeObserver(draw);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [candles, lines, height, live, hover]);
+  });
 
-  const onMove = (e: React.MouseEvent) => {
+  /* ------------------------- drag / hover -------------------------- */
+  const onPointerDown = (e: React.PointerEvent) => {
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { x: e.clientX };
+    setDragging(true);
+    setHover(null);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (dragRef.current) {
+      const dx = e.clientX - dragRef.current.x;
+      dragRef.current.x = e.clientX;
+      if (dx !== 0) setOffset((o) => clampOff(o + dx * cppRef.current));
+      return;
+    }
     const wrap = wrapRef.current;
     if (!wrap) return;
     const rect = wrap.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const data = candles.slice(-110);
-    const bw = (rect.width - 58) / Math.max(1, data.length);
+    const bw = (rect.width - AXIS_W) / Math.max(1, data.length);
     const i = Math.min(data.length - 1, Math.max(0, Math.floor(x / bw)));
     setHover({ x: i * bw + bw / 2, y: e.clientY - rect.top, c: data[i] });
   };
+  const endDrag = () => { dragRef.current = null; setDragging(false); };
+  const resetView = () => { setOffset(0); setVisible(110); };
 
   const hc = hover?.c;
   return (
-    <div ref={wrapRef} className="relative w-full" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+    <div ref={wrapRef}
+      className="relative w-full select-none"
+      style={{ cursor: dragging ? "grabbing" : "grab", touchAction: "none" }}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+      onPointerUp={endDrag} onPointerCancel={endDrag} onPointerLeave={() => { endDrag(); setHover(null); }}
+      onDoubleClick={resetView}>
       <canvas ref={ref} className="block w-full" />
-      {hc && (
+
+      {hc && !dragging && (
         <div className="absolute top-2 left-2 num text-[10.5px] px-2 py-1 rounded-md pointer-events-none"
           style={{ background: "rgba(10,17,32,0.9)", border: "1px solid #1c2942", color: "#c3cfdf" }}>
           O {hc.o.toFixed(2)}&nbsp; H {hc.h.toFixed(2)}&nbsp; L {hc.l.toFixed(2)}&nbsp;
           <span style={{ color: hc.c >= hc.o ? "#2fb98c" : "#e0564f" }}>C {hc.c.toFixed(2)}</span>
         </div>
+      )}
+
+      {/* zoom cluster */}
+      <div className="absolute bottom-2 left-2 flex items-center gap-1" style={{ pointerEvents: "auto" }}>
+        <button onPointerDown={(e) => e.stopPropagation()} onClick={() => setVisible((v) => Math.max(MIN_VIS, Math.round(v * 0.8)))}
+          title="Zoom in (fewer candles)"
+          className="num font-bold rounded-md transition-all hover:text-fog-100"
+          style={{ width: 26, height: 26, background: "rgba(10,17,32,0.88)", border: "1px solid #1c2942", color: "#93a3ba", fontSize: 14, lineHeight: "24px" }}>−</button>
+        <button onPointerDown={(e) => e.stopPropagation()} onClick={() => setVisible((v) => Math.min(MAX_VIS, Math.round(v * 1.25)))}
+          title="Zoom out (more candles)"
+          className="num font-bold rounded-md transition-all hover:text-fog-100"
+          style={{ width: 26, height: 26, background: "rgba(10,17,32,0.88)", border: "1px solid #1c2942", color: "#93a3ba", fontSize: 14, lineHeight: "24px" }}>+</button>
+        <span className="num text-[9.5px] px-1.5" style={{ color: "#4d5f78" }}>{vis} bars</span>
+      </div>
+
+      {/* back-to-live pill when panned into history */}
+      {!atLive && (
+        <button onPointerDown={(e) => e.stopPropagation()} onClick={() => setOffset(0)}
+          className="absolute top-2 right-2 flex items-center gap-1.5 num text-[10.5px] font-bold px-2.5 py-1 rounded-full transition-all animate-pop"
+          style={{ background: "rgba(57,197,165,0.16)", border: "1px solid rgba(57,197,165,0.55)", color: "#39c5a5", pointerEvents: "auto" }}>
+          −{off} bars · back to live ▸
+        </button>
       )}
     </div>
   );
