@@ -8,7 +8,8 @@ import { Flash, Ic, Modal, Spark, Toggle, fmtPx, fmtR, fmtSigned } from "../comp
 export default function Terminal() {
   const { state: s, dispatch } = useApp();
   const meta = assetMeta(s.selected);
-  const m = s.market[s.selected];
+  const m = s.market[s.selected] ?? s.market[ASSETS[0].symbol];
+  if (!m || !s.plan) return null;
   const pos = s.positions.find((p) => p.symbol === s.selected);
   const gate = gateCheck(s);
   const changePct = ((m.price - m.refClose) / m.refClose) * 100;
@@ -231,7 +232,7 @@ function EntryTicket({ gateOk, gateReason }: { gateOk: boolean; gateReason: stri
         <div className="flex items-center gap-2">
           <button className="btn btn-ghost !px-2.5 !py-1.5" onClick={() => setQty(Math.max(1, qty - (qty > 10 ? 5 : 1)))}>−</button>
           <input type="number" className="field num text-center" value={qty || ""} min={1}
-            onChange={(e) => setQty(Math.max(0, Math.floor(Number(e.target.value))))} />
+            onChange={(e) => { const n = Math.floor(Number(e.target.value)); setQty(Number.isFinite(n) ? Math.max(0, n) : 0); }} />
           <button className="btn btn-ghost !px-2.5 !py-1.5" onClick={() => setQty(qty + (qty >= 10 ? 5 : 1))}>+</button>
         </div>
         <button className="text-[11px] text-teal hover:underline mt-1.5 font-medium" onClick={() => setQty(suggested)}>

@@ -82,7 +82,7 @@ export default function Onboarding() {
                 <div className="flex items-center gap-3">
                   <span className="num text-[30px] font-semibold text-fog-100">$</span>
                   <input type="number" className="field num text-[24px] max-w-[240px]" value={capital} min={1000} step={1000}
-                    onChange={(e) => setCapital(Math.max(0, Number(e.target.value)))} />
+                    onChange={(e) => { const n = Number(e.target.value); setCapital(Number.isFinite(n) ? Math.max(0, n) : 0); }} />
                 </div>
                 <div className="flex gap-2 mt-3 flex-wrap">
                   {[10000, 25000, 50000, 100000].map((v) => (

@@ -1,5 +1,5 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { AppProvider, useApp } from "./lib/store";
+import { Component, useMemo, useState, type ReactNode } from "react";
+import { AppProvider, hardReset, useApp } from "./lib/store";
 import { ASSETS, FRICTIONS, type View } from "./lib/types";
 import { computeProcess } from "./lib/coaching";
 import { Flash, Ic, Modal, Toasts, fmtSigned } from "./components/ui";
@@ -25,9 +25,43 @@ const NAV: { id: View; label: string; icon: (p: { size?: number }) => ReactNode 
 
 export default function App() {
   return (
-    <AppProvider>
-      <Shell />
-    </AppProvider>
+    <ErrorBoundary>
+      <AppProvider>
+        <Shell />
+      </AppProvider>
+    </ErrorBoundary>
+  );
+}
+
+/* If anything ever throws during render, show a recovery screen instead of a blank page. */
+class ErrorBoundary extends Component<{ children: ReactNode }, { err: string | null }> {
+  state = { err: null as string | null };
+  static getDerivedStateFromError(err: unknown) {
+    return { err: err instanceof Error ? err.message : String(err) };
+  }
+  render() {
+    if (this.state.err) return <CrashScreen msg={this.state.err} />;
+    return this.props.children;
+  }
+}
+
+function CrashScreen({ msg }: { msg: string }) {
+  return (
+    <div className="h-full bg-ambient relative flex items-center justify-center p-6">
+      <div className="absolute inset-0 bg-gridlines pointer-events-none" />
+      <div className="panel relative max-w-md w-full p-7 text-center animate-pop">
+        <span className="inline-flex w-11 h-11 items-center justify-center rounded-xl text-down mb-4" style={{ background: "rgba(224,86,79,0.1)", border: "1px solid rgba(224,86,79,0.4)" }}>
+          <Ic.alert size={20} />
+        </span>
+        <h1 className="font-display font-bold text-[18px] text-fog-100 mb-2">The desk hit an unexpected error</h1>
+        <p className="text-[12.5px] text-fog-400 leading-relaxed mb-4">
+          Discipline applies to software too. Your saved session may be from an older version of the platform and no longer parses.
+        </p>
+        <p className="num text-[10.5px] text-fog-600 mb-5 break-words" style={{ background: "#0a1120", border: "1px solid #16213a", borderRadius: 8, padding: "8px 10px" }}>{msg}</p>
+        <button className="btn btn-teal w-full" onClick={() => hardReset()}>Clear local data &amp; restart</button>
+        <p className="text-[10.5px] text-fog-600 mt-3">This wipes locally stored journals and history. Exports are unaffected.</p>
+      </div>
+    </div>
   );
 }
 

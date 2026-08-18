@@ -6,8 +6,9 @@ import {
 } from "./types";
 import { CANDLE_TICKS, createMarket, pickHeadline, regimeOf, mulberry32 } from "./market";
 import { buildDebrief, detectTilt, generateMissions } from "./coaching";
+import { safeGet, safeSet, safeRemove, deepClone, num, str, arr, obj, bool } from "./safe";
 
-const LS_KEY = "deliberatetrade:v1";
+export const LS_KEY = "deliberatetrade:v2";
 let seq = 0;
 const nid = (p: string) => `${p}-${Date.now().toString(36)}-${(seq++).toString(36)}`;
 const rand = mulberry32((Date.now() % 100000) + 17);
@@ -32,25 +33,164 @@ function freshState(): AppState {
 function loadState(): AppState {
   const base = freshState();
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = safeGet(LS_KEY);
     if (!raw) return base;
-    const saved = JSON.parse(raw);
-    const market = createMarket(saved.seed ?? base.seed);
-    const s: AppState = {
-      ...base, ...saved, market, seed: saved.seed ?? base.seed,
-      orders: [], toasts: [], hydrated: true, cooldownUntil: 0, lock: saved.lock ?? null,
-      now: 0, lastNewsTick: 0, sessionStartTick: 0,
-    };
-    if ((saved.orders ?? []).length > 0)
-      s.log = [{ id: nid("lg"), kind: "system", text: "Open orders were cancelled when the session reloaded.", tick: 0, ts: Date.now() }, ...s.log];
-    // recompute equity against the regenerated tape
-    s.equity = s.cash + s.positions.reduce((a, p) => a + mtm(p, market[p.symbol].price), 0);
-    s.peakEquity = Math.max(s.peakEquity, s.equity);
-    if (s.plan) s.sessionStartEquity = s.equity;
-    return s;
+    const parsed: unknown = JSON.parse(raw);
+    const saved = obj(parsed);
+    if (!saved) return base;
+    return rehydrate(saved, base);
   } catch {
     return base;
   }
+}
+
+/** Coerce every persisted field into a known-good shape. Anything suspicious falls back to defaults. */
+function rehydrate(saved: Record<string, unknown>, base: AppState): AppState {
+  const market = createMarket(num(saved.seed, base.seed));
+  const symbols = new Set(Object.keys(market));
+
+  // ---- plan ----
+  const planRaw = obj(saved.plan);
+  let plan: Plan | null = null;
+  if (planRaw) {
+    const setups = arr(planRaw.setups).filter((x): x is string => typeof x === "string");
+    const forbidden = arr(planRaw.forbidden).filter((x): x is string => typeof x === "string");
+    plan = {
+      version: Math.max(1, Math.round(num(planRaw.version, 1))),
+      createdAt: num(planRaw.createdAt, Date.now()),
+      startingCapital: Math.max(1000, num(planRaw.startingCapital, 25000)),
+      riskPerTradePct: num(planRaw.riskPerTradePct, 1),
+      maxDailyLossPct: num(planRaw.maxDailyLossPct, 3),
+      maxOpenRiskPct: num(planRaw.maxOpenRiskPct, 4),
+      maxPositions: Math.max(1, Math.round(num(planRaw.maxPositions, 3))),
+      forbidden,
+      setups: setups.length ? setups : ["Breakout"],
+      note: str(planRaw.note, ""),
+    };
+  }
+
+  const checkinOf = (v: unknown): Checkin => {
+    const c = obj(v) ?? {};
+    const emo = str(c.emotion, "calm");
+    return {
+      emotion: (["calm", "focused", "fomo", "revenge", "bored", "overconfident", "fearful"].includes(emo) ? emo : "calm") as Checkin["emotion"],
+      arousal: Math.min(10, Math.max(1, num(c.arousal, 4))),
+      thesis: str(c.thesis, "—"),
+      at: num(c.at, Date.now()),
+    };
+  };
+
+  // ---- positions (drop anything malformed) ----
+  const positions: Position[] = [];
+  for (const p of arr(saved.positions)) {
+    const o = obj(p);
+    if (!o || typeof o.symbol !== "string" || !symbols.has(o.symbol)) continue;
+    positions.push({
+      id: str(o.id, nid("p")), symbol: o.symbol,
+      side: o.side === "short" ? "short" : "long",
+      qty: Math.max(1, num(o.qty, 1)), avgEntry: num(o.avgEntry, market[o.symbol].price),
+      stop: typeof o.stop === "number" && Number.isFinite(o.stop) ? o.stop : null,
+      target: typeof o.target === "number" && Number.isFinite(o.target) ? o.target : null,
+      openedTick: num(o.openedTick, 0), openedTs: num(o.openedTs, Date.now()),
+      riskAmount: num(o.riskAmount, 0), riskPct: num(o.riskPct, 0),
+      setup: str(o.setup, "—"), checkin: checkinOf(o.checkin), override: bool(o.override),
+      fees: num(o.fees, 0), stressHits: num(o.stressHits, 0), stopMovedWorse: bool(o.stopMovedWorse),
+      regime: (["trend-up", "trend-down", "range", "chop"].includes(str(o.regime, "")) ? str(o.regime, "range") : "range") as Position["regime"],
+    });
+  }
+
+  // ---- trades (coerce generously; history is precious) ----
+  const trades: Trade[] = [];
+  for (const t of arr(saved.trades)) {
+    const o = obj(t);
+    if (!o || typeof o.symbol !== "string") continue;
+    const jr = obj(o.journal);
+    const jraw = jr;
+    const journal: Journal | null = jraw
+      ? {
+          plan: str(jraw.plan, "—"), whatHappened: str(jraw.whatHappened, "—"),
+          emotionDuring: checkinOf({ emotion: jraw.emotionDuring }).emotion,
+          emotionAfter: checkinOf({ emotion: jraw.emotionAfter }).emotion,
+          followedRules: jraw.followedRules === "no" ? "no" : "yes",
+          rulesNote: str(jraw.rulesNote, ""), lesson: str(jraw.lesson, "—"),
+          setup: str(jraw.setup, "—"),
+          grade: (["A", "B", "C", "D"].includes(str(jraw.grade, "")) ? str(jraw.grade, "B") : "B") as Journal["grade"],
+          debrief: str(jraw.debrief, ""), at: num(jraw.at, Date.now()),
+        }
+      : null;
+    trades.push({
+      id: str(o.id, nid("tr")), symbol: o.symbol,
+      side: o.side === "short" ? "short" : "long",
+      qty: num(o.qty, 1), entry: num(o.entry, 0), exit: num(o.exit, 0),
+      entryTick: num(o.entryTick, 0), exitTick: num(o.exitTick, 0),
+      entryTs: num(o.entryTs, Date.now()), exitTs: num(o.exitTs, Date.now()),
+      pnl: num(o.pnl, 0), fees: num(o.fees, 0), r: num(o.r, 0),
+      riskAmount: Math.max(1, num(o.riskAmount, 1)), setup: str(o.setup, "—"),
+      exitReason: (["stop", "target", "manual", "session"].includes(str(o.exitReason, "")) ? str(o.exitReason, "manual") : "manual") as Trade["exitReason"],
+      checkin: checkinOf(o.checkin), override: bool(o.override),
+      violations: arr(o.violations).filter((x): x is string => typeof x === "string"),
+      friction: (["easy", "realistic", "brutal"].includes(str(o.friction, "")) ? str(o.friction, "realistic") : "realistic") as Trade["friction"],
+      regime: (["trend-up", "trend-down", "range", "chop"].includes(str(o.regime, "")) ? str(o.regime, "range") : "range") as Trade["regime"],
+      stressHits: num(o.stressHits, 0), journal,
+    });
+  }
+  const tradeIds = new Set(trades.map((t) => t.id));
+
+  const s: AppState = {
+    ...base,
+    name: str(saved.name, ""),
+    plan,
+    planHistory: arr(saved.planHistory).map((h) => {
+      const o = obj(h);
+      return { version: num(o?.version, 1), at: num(o?.at, Date.now()), reason: str(o?.reason, "") };
+    }),
+    friction: (["easy", "realistic", "brutal"].includes(str(saved.friction, "")) ? str(saved.friction, "realistic") : "realistic") as AppState["friction"],
+    stressMode: bool(saved.stressMode),
+    cash: num(saved.cash, plan ? plan.startingCapital : 0),
+    equity: 0, peakEquity: num(saved.peakEquity, 0),
+    sessionStartEquity: 0,
+    session: Math.max(1, Math.round(num(saved.session, 1))),
+    sessionStartTick: 0,
+    positions, orders: [], trades,
+    reviews: arr(saved.reviews).map((r) => obj(r)).filter((o): o is Record<string, unknown> => !!o && typeof o.tradeId === "string" && tradeIds.has(o.tradeId as string))
+      .map((o) => ({ id: str(o.id, nid("rv")), tradeId: str(o.tradeId, ""), dueTick: num(o.dueTick, 0), interval: Math.max(10, num(o.interval, 40)), reps: num(o.reps, 0) })),
+    missions: arr(saved.missions).map((m) => obj(m)).filter((o): o is Record<string, unknown> => !!o && typeof o.code === "string")
+      .map((o) => ({
+        id: str(o.id, nid("m")), code: str(o.code, ""), title: str(o.title, "Mission"),
+        why: str(o.why, ""), target: Math.max(1, num(o.target, 1)), progress: num(o.progress, 0),
+        done: bool(o.done), area: str(o.area, "Discipline"),
+      })),
+    practiceScore: num(saved.practiceScore, 0),
+    violations: arr(saved.violations).map((v) => obj(v)).filter((o): o is Record<string, unknown> => !!o)
+      .map((o) => ({ id: str(o.id, nid("v")), rule: str(o.rule, "Rule"), detail: str(o.detail, ""), at: num(o.at, 0), ts: num(o.ts, Date.now()) })),
+    news: arr(saved.news).map((n) => obj(n)).filter((o): o is Record<string, unknown> => !!o && typeof o.symbol === "string")
+      .slice(0, 14)
+      .map((o) => ({ id: str(o.id, nid("n")), symbol: str(o.symbol, ""), headline: str(o.headline, ""), impact: (o.impact === "up" ? "up" : "down") as "up" | "down", tick: num(o.tick, 0), ts: num(o.ts, Date.now()) })),
+    log: arr(saved.log).map((l) => obj(l)).filter((o): o is Record<string, unknown> => !!o)
+      .slice(0, 60)
+      .map((o) => ({ id: str(o.id, nid("lg")), kind: (["fill", "risk", "event", "system", "coach"].includes(str(o.kind, "")) ? str(o.kind, "system") : "system") as "fill" | "risk" | "event" | "system" | "coach", text: str(o.text, ""), tick: num(o.tick, 0), ts: num(o.ts, Date.now()) })),
+    toasts: [],
+    journalDue: arr(saved.journalDue).filter((id): id is string => typeof id === "string" && tradeIds.has(id) && !trades.find((t) => t.id === id)?.journal),
+    lock: (() => { const o = obj(saved.lock); return o && typeof o.reason === "string" ? { reason: o.reason, loss: num(o.loss, 0) } : null; })(),
+    cooldownUntil: 0, tiltReason: null,
+    breaches: Math.max(0, num(saved.breaches, 0)),
+    stressSeen: Math.max(0, num(saved.stressSeen, 0)),
+    stressSurvived: Math.max(0, num(saved.stressSurvived, 0)),
+    lossStreak: Math.max(0, num(saved.lossStreak, 0)),
+    market, seed: num(saved.seed, base.seed), now: 0, lastNewsTick: 0,
+    selected: symbols.has(str(saved.selected, "")) ? (str(saved.selected, "NVDA")) : "NVDA",
+    hydrated: true,
+  };
+
+  if (arr(saved.orders).length > 0)
+    s.log = [{ id: nid("lg"), kind: "system", text: "Open orders were cancelled when the session reloaded.", tick: 0, ts: Date.now() }, ...s.log];
+
+  // recompute equity against the regenerated tape
+  s.equity = s.cash + s.positions.reduce((a, p) => a + mtm(p, market[p.symbol].price), 0);
+  s.peakEquity = Math.max(s.peakEquity, s.equity);
+  if (s.plan) s.sessionStartEquity = s.equity;
+  if (!s.missions.length && s.plan) s.missions = generateMissions("adherence", s.plan.setups);
+  return s;
 }
 
 const mtm = (p: Position, px: number) => (p.side === "long" ? px - p.avgEntry : p.avgEntry - px) * p.qty;
@@ -228,7 +368,7 @@ export function gateCheck(d: AppState): { ok: boolean; reason: string } {
 
 /* ----------------------------- reducer ---------------------------- */
 function reducer(state: AppState, action: Action): AppState {
-  const d: AppState = structuredClone(state);
+  const d: AppState = deepClone(state);
   switch (action.type) {
     case "TICK": return tick(d);
     case "SELECT": d.selected = action.symbol; return d;
@@ -330,7 +470,7 @@ function reducer(state: AppState, action: Action): AppState {
     }
     case "DISMISS_TOAST": d.toasts = d.toasts.filter((t) => t.id !== action.id); return d;
     case "RESET_ALL": {
-      localStorage.removeItem(LS_KEY);
+      safeRemove(LS_KEY);
       return freshState();
     }
   }
@@ -587,7 +727,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     try {
       const { market: _m, toasts: _t, ...rest } = state;
-      localStorage.setItem(LS_KEY, JSON.stringify(rest));
+      safeSet(LS_KEY, JSON.stringify(rest));
     } catch { /* storage full — ignore */ }
   }, [state]);
 
@@ -598,4 +738,10 @@ export function useApp() {
   const v = useContext(Ctx);
   if (!v) throw new Error("useApp outside provider");
   return v;
+}
+
+/** Nuclear recovery: wipe persisted data and reload. Used by the crash screen. */
+export function hardReset() {
+  safeRemove(LS_KEY);
+  window.location.reload();
 }

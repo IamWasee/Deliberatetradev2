@@ -90,8 +90,8 @@ const L = ({ label, children }: { label: string; children: ReactNode }) => (
   </div>
 );
 const Num = ({ v, set, step = 1, min = 0 }: { v: number; set: (n: number) => void; step?: number; min?: number }) => (
-  <input type="number" className="field num" value={Number(v.toFixed(4))} step={step} min={min}
-    onChange={(e) => set(Number(e.target.value))} />
+  <input type="number" className="field num" value={Number.isFinite(v) ? Number(v.toFixed(4)) : min} step={step} min={min}
+    onChange={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) set(n); }} />
 );
 const Slider = ({ label, v, set, min, max, step, fmt }: { label: string; v: number; set: (n: number) => void; min: number; max: number; step: number; fmt: (n: number) => string }) => (
   <div>
