@@ -251,6 +251,9 @@ export interface AppState {
   stressSurvived: number;
   lossStreak: number;
 
+  tourDone: boolean;
+  tourOpen: boolean;
+
   market: Record<string, MarketState>;
   seed: number;
   now: number;

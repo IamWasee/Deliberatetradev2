@@ -1,5 +1,6 @@
-import { Component, useMemo, useState, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AppProvider, hardReset, useApp } from "./lib/store";
+import Tour from "./components/Tour";
 import { ASSETS, FRICTIONS, type View } from "./lib/types";
 import { computeProcess } from "./lib/coaching";
 import { Flash, Ic, Modal, Toasts, fmtSigned } from "./components/ui";
@@ -66,8 +67,14 @@ function CrashScreen({ msg }: { msg: string }) {
 }
 
 function Shell() {
-  const { state: s } = useApp();
+  const { state: s, dispatch } = useApp();
   const [view, setView] = useState<View>("terminal");
+
+  // Open the companion tour once, the first time a plan exists.
+  useEffect(() => {
+    if (s.plan && !s.tourDone && !s.tourOpen) dispatch({ type: "OPEN_TOUR", open: true });
+  }, [s.plan, s.tourDone, s.tourOpen, dispatch]);
+
   if (!s.plan) return <><Onboarding /><ToastLayer /></>;
   return (
     <div className="h-full bg-ambient relative">
@@ -75,7 +82,7 @@ function Shell() {
       <div className="relative h-full flex">
         <Rail view={view} setView={setView} />
         <div className="flex-1 flex flex-col min-w-0 h-full">
-          <TopBar />
+          <TopBar onHelp={() => dispatch({ type: "OPEN_TOUR", open: true })} />
           <TickerTape />
           {/* mobile nav */}
           <nav className="md:hidden shrink-0 flex gap-1 px-2 py-1.5 overflow-x-auto border-b border-line" style={{ background: "rgba(10,17,32,0.92)" }}>
@@ -100,6 +107,7 @@ function Shell() {
       </div>
       <LockReview />
       <JournalModal />
+      <Tour setView={setView} />
       <ToastLayer />
     </div>
   );
@@ -115,7 +123,7 @@ function Rail({ view, setView }: { view: View; setView: (v: View) => void }) {
   const pending = s.trades.filter((t) => !t.journal).length;
   const dueReviews = s.reviews.filter((r) => r.dueTick <= s.now).length;
   return (
-    <aside className="hidden md:flex flex-col items-stretch shrink-0 py-3 px-2 gap-1 w-[64px] xl:w-[176px] border-r border-line" style={{ background: "rgba(10,17,32,0.65)" }}>
+    <aside className="hidden md:flex flex-col items-stretch shrink-0 py-3 px-2 gap-1 w-[64px] xl:w-[176px] border-r border-line" style={{ background: "rgba(10,17,32,0.65)" }} data-tour="nav">
       <div className="flex items-center gap-2.5 px-1.5 pb-3 mb-1 border-b border-line-soft">
         <Ic.logo size={30} />
         <div className="hidden xl:block leading-none">
@@ -149,7 +157,7 @@ function Rail({ view, setView }: { view: View; setView: (v: View) => void }) {
   );
 }
 
-function TopBar() {
+function TopBar({ onHelp }: { onHelp: () => void }) {
   const { state: s, dispatch } = useApp();
   const proc = useMemo(() => computeProcess(s.trades, s.violations.length, s.plan), [s.trades, s.violations, s.plan]);
   const dayPnl = s.equity - s.sessionStartEquity;
@@ -162,22 +170,19 @@ function TopBar() {
   return (
     <header className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-2 px-3 md:px-4 min-h-[58px] py-2 border-b border-line" style={{ background: "rgba(10,17,32,0.72)" }}>
       <div className="flex items-center gap-2 md:hidden"><Ic.logo size={26} /></div>
-      <div className="flex items-baseline gap-2">
+      <div className="flex items-baseline gap-2" data-tour="equity">
         <span className="lbl hidden sm:inline">Equity</span>
         <Flash value={s.equity} format={(n) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           className="text-[17px] font-semibold text-fog-100" />
+        <span className={`num text-[12.5px] font-medium ml-1 ${dayPnl >= 0 ? "text-up" : "text-down"}`}>{fmtSigned(dayPnl, 0)}</span>
       </div>
-      <div className="flex items-baseline gap-1.5">
-        <span className="lbl hidden lg:inline">Session</span>
-        <span className={`num text-[13.5px] font-medium ${dayPnl >= 0 ? "text-up" : "text-down"}`}>{fmtSigned(dayPnl, 0)}</span>
-      </div>
-      <div className="hidden md:flex items-center gap-2 w-[128px]">
+      <div className="hidden md:flex items-center gap-2 w-[128px]" data-tour="riskmeter">
         <span className="lbl">Risk</span>
         <div className="flex-1 h-[6px] rounded-full overflow-hidden" style={{ background: "#16213a" }}>
           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(100, (openRisk / Math.max(1, riskLimit)) * 100)}%`, background: openRisk / Math.max(1, riskLimit) > 0.85 ? "#e0564f" : "#39c5a5" }} />
         </div>
       </div>
-      <div className="flex items-center gap-2" title={`Process score ${proc.score}/100`}>
+      <div className="flex items-center gap-2" title={`Process score ${proc.score}/100`} data-tour="process">
         <span className="lbl hidden lg:inline">Process</span>
         <div className="relative w-[34px] h-[34px]">
           <svg width="34" height="34" className="-rotate-90">
@@ -189,7 +194,10 @@ function TopBar() {
         </div>
       </div>
 
-      <div className="ml-auto flex items-center gap-2.5 md:gap-3.5 flex-wrap">
+      <div className="ml-auto flex items-center gap-2.5 md:gap-3.5 flex-wrap" data-tour="controls">
+        <button onClick={onHelp} title="Replay the guided tour"
+          className="flex items-center justify-center w-[30px] h-[30px] rounded-lg font-display font-bold text-[14px] transition-all hover:border-teal"
+          style={{ background: "#111b30", border: "1px solid #1c2942", color: "#6fb6e8" }}>?</button>
         <div className="hidden sm:flex items-center gap-1.5">
           <span className={`w-2 h-2 rounded-full ${s.stressMode ? "bg-amber" : "bg-teal"} animate-pulse-dot`} />
           <span className="lbl">sim live</span>
@@ -235,7 +243,7 @@ function TickerTape() {
     </div>
   );
   return (
-    <div className="shrink-0 overflow-hidden border-b border-line hidden md:block" style={{ background: "rgba(7,12,22,0.6)" }}>
+    <div className="shrink-0 overflow-hidden border-b border-line hidden md:block" style={{ background: "rgba(7,12,22,0.6)" }} data-tour="ticker">
       <div className="ticker-track flex w-max">{row("a")}{row("b")}</div>
     </div>
   );

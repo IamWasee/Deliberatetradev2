@@ -151,27 +151,41 @@ export function Segmented<T extends string>({ options, value, onChange, size = "
 }
 
 /* ----------------------------- toasts ----------------------------- */
+const TOAST_TONE: Record<Toast["kind"], string> = { ok: "#2fb98c", warn: "#e0a33b", bad: "#e0564f", info: "#6fb6e8" };
+const TOAST_LIFE = 4200;
+
+/**
+ * Sits top-center (below the top bar) so it never covers the order ticket or
+ * primary buttons. Each toast owns its own timer + visible countdown bar, so
+ * new notifications can no longer keep old ones alive forever.
+ */
 export function Toasts({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: string) => void }) {
-  useEffect(() => {
-    if (!toasts.length) return;
-    const timers = toasts.map((t) => setTimeout(() => dismiss(t.id), 4200));
-    return () => timers.forEach(clearTimeout);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toasts]);
-  const tone = { ok: "#2fb98c", warn: "#e0a33b", bad: "#e0564f", info: "#6fb6e8" };
   return (
-    <div className="fixed bottom-4 right-4 z-[70] flex flex-col gap-2 w-[min(360px,90vw)]">
-      {toasts.slice(-4).map((t) => (
-        <button key={t.id} onClick={() => dismiss(t.id)}
-          className="panel text-left px-3.5 py-2.5 flex items-start gap-2.5 animate-pop cursor-pointer"
-          style={{ borderLeft: `3px solid ${tone[t.kind]}`, background: "#0e1729" }}>
-          <span className="mt-[3px] shrink-0" style={{ color: tone[t.kind] }}>
-            {t.kind === "ok" ? <Ic.check size={14} /> : t.kind === "bad" ? <Ic.alert size={14} /> : t.kind === "warn" ? <Ic.alert size={14} /> : <Ic.zap size={14} />}
-          </span>
-          <span className="text-[12.5px] leading-snug text-fog-200">{t.text}</span>
-        </button>
+    <div className="fixed left-1/2 -translate-x-1/2 top-[92px] z-[60] flex flex-col items-center gap-2 w-[min(400px,92vw)] pointer-events-none">
+      {toasts.slice(-3).map((t) => (
+        <ToastItem key={t.id} toast={t} dismiss={dismiss} />
       ))}
     </div>
+  );
+}
+
+function ToastItem({ toast, dismiss }: { toast: Toast; dismiss: (id: string) => void }) {
+  const tone = TOAST_TONE[toast.kind];
+  useEffect(() => {
+    const t = setTimeout(() => dismiss(toast.id), TOAST_LIFE);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <button onClick={() => dismiss(toast.id)}
+      className="pointer-events-auto relative w-full text-left px-3.5 py-2.5 pb-3 flex items-start gap-2.5 animate-pop cursor-pointer overflow-hidden rounded-xl"
+      style={{ background: "rgba(14,23,41,0.96)", border: "1px solid #1c2942", borderLeft: `3px solid ${tone}`, boxShadow: "0 12px 32px -12px rgba(0,0,0,0.65)" }}>
+      <span className="mt-[3px] shrink-0" style={{ color: tone }}>
+        {toast.kind === "ok" ? <Ic.check size={14} /> : toast.kind === "bad" ? <Ic.alert size={14} /> : toast.kind === "warn" ? <Ic.alert size={14} /> : <Ic.zap size={14} />}
+      </span>
+      <span className="text-[12.5px] leading-snug text-fog-200 pr-1">{toast.text}</span>
+      <span className="absolute bottom-0 left-0 h-[3px] rounded-r-full" style={{ background: tone, animation: `toastbar ${TOAST_LIFE}ms linear forwards` }} />
+    </button>
   );
 }
 

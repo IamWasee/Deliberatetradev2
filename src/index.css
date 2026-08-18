@@ -79,6 +79,10 @@
   25% { transform: translateX(-4px); }
   75% { transform: translateX(4px); }
 }
+@keyframes toastbar {
+  from { width: 100%; }
+  to { width: 0%; }
+}
 
 html, body, #root {
   height: 100%;

@@ -36,7 +36,7 @@ export default function Terminal() {
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-[218px_1fr_288px] gap-3 min-h-0 overflow-y-auto lg:overflow-visible">
         {/* watchlist + news */}
         <div className="flex flex-col gap-3 min-h-0">
-          <div className="panel p-2.5 flex-1 min-h-[240px] overflow-y-auto">
+          <div className="panel p-2.5 flex-1 min-h-[240px] overflow-y-auto" data-tour="watchlist">
             <p className="lbl px-1.5 pb-2">Watchlist</p>
             {ASSETS.map((a) => {
               const mm = s.market[a.symbol];
@@ -63,7 +63,7 @@ export default function Terminal() {
               );
             })}
           </div>
-          <div className="panel p-2.5 h-[210px] overflow-y-auto shrink-0">
+          <div className="panel p-2.5 h-[210px] overflow-y-auto shrink-0" data-tour="news">
             <p className="lbl px-1.5 pb-2">News wire · tagged</p>
             {s.news.length === 0 && <p className="text-[11.5px] text-fog-600 px-1.5">Wire is quiet. Headlines land here and move the tape.</p>}
             {s.news.map((n) => (
@@ -81,7 +81,7 @@ export default function Terminal() {
 
         {/* chart column */}
         <div className="flex flex-col gap-3 min-h-0">
-          <div className="panel p-3.5">
+          <div className="panel p-3.5" data-tour="chart">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-2">
               <div>
                 <div className="flex items-center gap-2">
@@ -113,7 +113,7 @@ export default function Terminal() {
         </div>
 
         {/* ticket */}
-        <div className="min-h-0">
+        <div className="min-h-0" data-tour="ticket">
           {pos ? <ManagePanel key={pos.id} posId={pos.id} /> : <EntryTicket gateOk={gate.ok} gateReason={gate.reason} />}
         </div>
       </div>

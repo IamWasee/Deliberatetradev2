@@ -25,6 +25,7 @@ function freshState(): AppState {
     violations: [], news: [], log: [], toasts: [], journalDue: [],
     lock: null, cooldownUntil: 0, tiltReason: null,
     breaches: 0, stressSeen: 0, stressSurvived: 0, lossStreak: 0,
+    tourDone: false, tourOpen: false,
     market: createMarket(seed), seed, now: 0, lastNewsTick: 0,
     selected: "NVDA",
   };
@@ -179,6 +180,7 @@ function rehydrate(saved: Record<string, unknown>, base: AppState): AppState {
     lossStreak: Math.max(0, num(saved.lossStreak, 0)),
     market, seed: num(saved.seed, base.seed), now: 0, lastNewsTick: 0,
     selected: symbols.has(str(saved.selected, "")) ? (str(saved.selected, "NVDA")) : "NVDA",
+    tourDone: bool(saved.tourDone), tourOpen: false,
     hydrated: true,
   };
 
@@ -212,10 +214,14 @@ export type Action =
   | { type: "END_SESSION" }
   | { type: "RESOLVE_REVIEW"; id: string; again: boolean }
   | { type: "DISMISS_TOAST"; id: string }
-  | { type: "RESET_ALL" };
+  | { type: "RESET_ALL" }
+  | { type: "OPEN_TOUR"; open: boolean }
+  | { type: "TOUR_FINISHED" };
 
-const toast = (d: AppState, kind: Toast["kind"], text: string) =>
+const toast = (d: AppState, kind: Toast["kind"], text: string) => {
   d.toasts.push({ id: nid("t"), kind, text });
+  if (d.toasts.length > 4) d.toasts = d.toasts.slice(-4);
+};
 const log = (d: AppState, kind: "fill" | "risk" | "event" | "system" | "coach", text: string) => {
   d.log.unshift({ id: nid("lg"), kind, text, tick: d.now, ts: Date.now() });
   if (d.log.length > 60) d.log.length = 60;
@@ -473,6 +479,8 @@ function reducer(state: AppState, action: Action): AppState {
       safeRemove(LS_KEY);
       return freshState();
     }
+    case "OPEN_TOUR": { d.tourOpen = action.open; return d; }
+    case "TOUR_FINISHED": { d.tourOpen = false; d.tourDone = true; return d; }
   }
 }
 
