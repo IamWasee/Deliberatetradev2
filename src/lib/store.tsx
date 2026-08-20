@@ -7,6 +7,9 @@ import {
 import { CANDLE_TICKS, createMarket, pickHeadline, regimeOf, mulberry32 } from "./market";
 import { buildDebrief, detectTilt, generateMissions } from "./coaching";
 import { safeGet, safeSet, safeRemove, deepClone, num, str, arr, obj, bool } from "./safe";
+import { journalGate, journalQualityScore } from "./journalQuality";
+import { defaultIndicators, defOf, INDICATOR_DEFS } from "./indicators";
+import type { ActiveIndicator } from "./types";
 
 export const LS_KEY = "deliberatetrade:v2";
 let seq = 0;
@@ -26,6 +29,7 @@ function freshState(): AppState {
     lock: null, cooldownUntil: 0, tiltReason: null,
     breaches: 0, stressSeen: 0, stressSurvived: 0, lossStreak: 0,
     tourDone: false, tourOpen: false,
+    indicators: defaultIndicators(),
     market: createMarket(seed), seed, now: 0, lastNewsTick: 0,
     selected: "NVDA",
   };
@@ -107,18 +111,25 @@ function rehydrate(saved: Record<string, unknown>, base: AppState): AppState {
     if (!o || typeof o.symbol !== "string") continue;
     const jr = obj(o.journal);
     const jraw = jr;
-    const journal: Journal | null = jraw
-      ? {
-          plan: str(jraw.plan, "—"), whatHappened: str(jraw.whatHappened, "—"),
+    let journal: Journal | null = null;
+    if (jraw) {
+      const plan = str(jraw.plan, "—"), whatHappened = str(jraw.whatHappened, "—");
+      const rulesNote = str(jraw.rulesNote, ""), lesson = str(jraw.lesson, "—");
+      const followedRules = jraw.followedRules === "no" ? "no" : "yes";
+      journal = {
+          plan, whatHappened,
           emotionDuring: checkinOf({ emotion: jraw.emotionDuring }).emotion,
           emotionAfter: checkinOf({ emotion: jraw.emotionAfter }).emotion,
-          followedRules: jraw.followedRules === "no" ? "no" : "yes",
-          rulesNote: str(jraw.rulesNote, ""), lesson: str(jraw.lesson, "—"),
+          followedRules,
+          rulesNote, lesson,
           setup: str(jraw.setup, "—"),
           grade: (["A", "B", "C", "D"].includes(str(jraw.grade, "")) ? str(jraw.grade, "B") : "B") as Journal["grade"],
+          qualityScore: typeof jraw.qualityScore === "number" && Number.isFinite(jraw.qualityScore)
+            ? Math.max(0, Math.min(100, jraw.qualityScore))
+            : journalQualityScore({ plan, whatHappened, rulesNote, lesson, followedRules }),
           debrief: str(jraw.debrief, ""), at: num(jraw.at, Date.now()),
-        }
-      : null;
+        };
+    }
     trades.push({
       id: str(o.id, nid("tr")), symbol: o.symbol,
       side: o.side === "short" ? "short" : "long",
@@ -181,6 +192,7 @@ function rehydrate(saved: Record<string, unknown>, base: AppState): AppState {
     market, seed: num(saved.seed, base.seed), now: 0, lastNewsTick: 0,
     selected: symbols.has(str(saved.selected, "")) ? (str(saved.selected, "NVDA")) : "NVDA",
     tourDone: bool(saved.tourDone), tourOpen: false,
+    indicators: sanitizeIndicators(saved.indicators),
     hydrated: true,
   };
 
@@ -197,6 +209,26 @@ function rehydrate(saved: Record<string, unknown>, base: AppState): AppState {
 
 const mtm = (p: Position, px: number) => (p.side === "long" ? px - p.avgEntry : p.avgEntry - px) * p.qty;
 
+/** Coerce persisted indicator config into a known-good shape. */
+function sanitizeIndicators(v: unknown): ActiveIndicator[] {
+  const validIds = new Set(INDICATOR_DEFS.map((d) => d.id));
+  const out: ActiveIndicator[] = [];
+  for (const it of arr(v)) {
+    const o = obj(it);
+    if (!o || typeof o.id !== "string" || !validIds.has(o.id as ActiveIndicator["id"])) continue;
+    const id = o.id as ActiveIndicator["id"];
+    const params: Record<string, number> = {};
+    const po = obj(o.params) ?? {};
+    defOf(id).params.forEach((pd) => {
+      const raw = po[pd.key];
+      const n = typeof raw === "number" && Number.isFinite(raw) ? raw : pd.def;
+      params[pd.key] = Math.min(pd.max, Math.max(pd.min, n));
+    });
+    out.push({ uid: str(o.uid, `${id}-${out.length}`), id, params });
+  }
+  return out.length ? out : defaultIndicators();
+}
+
 /* ------------------------------------------------------------------ */
 export type Action =
   | { type: "TICK" }
@@ -209,14 +241,15 @@ export type Action =
   | { type: "CANCEL_ORDER"; id: string }
   | { type: "CLOSE_POSITION"; id: string }
   | { type: "ADJUST_BRACKET"; id: string; stop: number | null; target: number | null }
-  | { type: "SUBMIT_JOURNAL"; tradeId: string; journal: Omit<Journal, "debrief" | "at"> }
+  | { type: "SUBMIT_JOURNAL"; tradeId: string; journal: Omit<Journal, "debrief" | "at" | "qualityScore"> }
   | { type: "ACK_LOCK" }
   | { type: "END_SESSION" }
   | { type: "RESOLVE_REVIEW"; id: string; again: boolean }
   | { type: "DISMISS_TOAST"; id: string }
   | { type: "RESET_ALL" }
   | { type: "OPEN_TOUR"; open: boolean }
-  | { type: "TOUR_FINISHED" };
+  | { type: "TOUR_FINISHED" }
+  | { type: "SET_INDICATORS"; indicators: ActiveIndicator[] };
 
 const toast = (d: AppState, kind: Toast["kind"], text: string) => {
   d.toasts.push({ id: nid("t"), kind, text });
@@ -369,6 +402,9 @@ export function gateCheck(d: AppState): { ok: boolean; reason: string } {
   if (!d.plan) return { ok: false, reason: "No trading plan on file." };
   if (d.lock) return { ok: false, reason: "Daily loss limit breached — session locked." };
   if (d.now < d.cooldownUntil) return { ok: false, reason: "Tilt cool-down active." };
+  // The mandatory journal must be filed (and pass the quality gate) before
+  // the next order — this is what makes the reflection non-optional.
+  if (d.journalDue.length > 0) return { ok: false, reason: "File the pending post-trade journal before your next order." };
   return { ok: true, reason: "" };
 }
 
@@ -439,21 +475,35 @@ function reducer(state: AppState, action: Action): AppState {
     case "SUBMIT_JOURNAL": {
       const t = d.trades.find((x) => x.id === action.tradeId);
       if (!t) return d;
+      // Defense in depth: the UI gates too, but the store re-validates so the
+      // score can never be inflated by bypassing the front end.
+      const fields = {
+        plan: action.journal.plan, whatHappened: action.journal.whatHappened,
+        rulesNote: action.journal.rulesNote, lesson: action.journal.lesson,
+        followedRules: action.journal.followedRules,
+      };
+      const gate = journalGate(fields);
+      if (!gate.ok) { toast(d, "warn", gate.reason); return d; }
+      const qualityScore = journalQualityScore(fields);
+      if (qualityScore < 25) {
+        toast(d, "warn", "Journal rejected by the quality engine — write a real reflection.");
+        return d;
+      }
       const debrief = buildDebrief(t, d.plan, d.trades);
-      t.journal = { ...action.journal, debrief, at: Date.now() };
+      t.journal = { ...action.journal, qualityScore, debrief, at: Date.now() };
       d.journalDue = d.journalDue.filter((id) => id !== action.tradeId);
       d.practiceScore += 2;
       if (t.r < 0) {
         d.reviews.push({ id: nid("rv"), tradeId: t.id, dueTick: d.now + 40, interval: 40, reps: 0 });
         d.missions.forEach((m) => {
-          if (m.code === "journal2" && !m.done && action.journal.lesson.length >= 40) {
+          if (m.code === "journal2" && !m.done && qualityScore >= 50 && action.journal.lesson.length >= 40) {
             m.progress++;
             if (m.progress >= m.target) { m.done = true; d.practiceScore += 25; toast(d, "ok", `Mission complete: ${m.title} (+25 practice)`); }
           }
         });
       }
-      log(d, "coach", `Journal filed for ${t.symbol} (${t.r >= 0 ? "+" : ""}${t.r.toFixed(2)}R). Grade ${action.journal.grade}.`);
-      toast(d, "ok", "Journal saved. Coach debrief attached.");
+      log(d, "coach", `Journal filed for ${t.symbol} (${t.r >= 0 ? "+" : ""}${t.r.toFixed(2)}R). Grade ${action.journal.grade} · quality ${qualityScore}/100.`);
+      toast(d, "ok", `Journal saved · quality ${qualityScore}/100. Coach debrief attached.`);
       return d;
     }
     case "ACK_LOCK": return endSession(d, true);
@@ -481,6 +531,7 @@ function reducer(state: AppState, action: Action): AppState {
     }
     case "OPEN_TOUR": { d.tourOpen = action.open; return d; }
     case "TOUR_FINISHED": { d.tourOpen = false; d.tourDone = true; return d; }
+    case "SET_INDICATORS": { d.indicators = sanitizeIndicators(action.indicators); return d; }
   }
 }
 

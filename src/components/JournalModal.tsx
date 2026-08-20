@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../lib/store";
 import { EMOTIONS, type EmotionTag } from "../lib/types";
-import { Modal, fmtR, fmtSigned } from "./ui";
+import { journalGate, journalQualityScore } from "../lib/journalQuality";
+import { Bar, Modal, fmtR, fmtSigned } from "./ui";
 
 export default function JournalModal() {
   const { state: s, dispatch } = useApp();
@@ -28,8 +29,14 @@ export default function JournalModal() {
   }, [tradeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!trade) return null;
-  const ok = plan.trim().length >= 12 && what.trim().length >= 12 && followed !== null
-    && (followed === "yes" || rulesNote.trim().length >= 10) && lesson.trim().length >= 20 && grade !== null;
+  const fields = {
+    plan: plan.trim(), whatHappened: what.trim(), rulesNote: rulesNote.trim(),
+    lesson: lesson.trim(), followedRules: (followed ?? "yes") as "yes" | "no",
+  };
+  const gate = journalGate(fields);
+  const quality = journalQualityScore(fields);
+  const ok = followed !== null && grade !== null && gate.ok;
+  const qColor = quality >= 70 ? "#2fb98c" : quality >= 40 ? "#e0a33b" : "#e0564f";
 
   return (
     <Modal open locked wide title={<span className="flex items-center gap-2">Mandatory post-trade journal <span className={`num text-[12px] ${trade.r >= 0 ? "text-up" : "text-down"}`}>{trade.symbol} {fmtR(trade.r)} · {fmtSigned(trade.pnl, 0)}</span></span>}>
@@ -95,6 +102,28 @@ export default function JournalModal() {
             </div>
           </div>
         </div>
+        {/* live reflection-quality meter */}
+        <div className="panel-inset p-3.5">
+          <div className="flex items-baseline justify-between mb-1.5">
+            <span className="lbl">Reflection quality</span>
+            <span className="num text-[15px] font-semibold" style={{ color: qColor }}>{quality}/100</span>
+          </div>
+          <Bar value={quality / 100} color={qColor} h={6} />
+          <p className="text-[10.5px] text-fog-500 mt-1.5 leading-snug">
+            Scored on length, specificity and genuine reflection — not character count. Random text scores 10–30 and is rejected. This feeds your Process Score.
+          </p>
+        </div>
+
+        {!gate.ok && (
+          <div className="rounded-lg p-3 animate-fade-in" style={{ background: "rgba(224,86,79,0.08)", border: "1px solid rgba(224,86,79,0.45)" }}>
+            <p className="text-[12px] text-down font-semibold flex items-center gap-2 mb-0.5">
+              <span className="inline-flex"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M12 4 2.8 20h18.4zM12 10v4.5M12 17.3v.2"/></svg></span>
+              Journal blocked
+            </p>
+            <p className="text-[12px] text-fog-300 leading-snug">{gate.reason}</p>
+          </div>
+        )}
+
         <button className="btn btn-teal w-full !py-2.5 !text-[13.5px]" disabled={!ok}
           onClick={() => dispatch({
             type: "SUBMIT_JOURNAL", tradeId: trade.id,

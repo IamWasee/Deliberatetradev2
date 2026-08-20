@@ -18,11 +18,12 @@ export function computeProcess(trades: Trade[], violationCount: number, plan: Pl
 
   const journaled = trades.filter((t) => t.journal);
   const completion = journaled.length / trades.length;
-  const gradePts = { A: 1, B: 0.85, C: 0.62, D: 0.38 };
-  const quality = journaled.length
-    ? journaled.reduce((s, t) => s + gradePts[t.journal!.grade], 0) / journaled.length
+  // Real reflection quality (0..1) computed by the quality engine — self-assigned
+  // grades alone can no longer inflate this. Garbage journals keep it near zero.
+  const avgQuality = journaled.length
+    ? journaled.reduce((s, t) => s + t.journal!.qualityScore, 0) / journaled.length / 100
     : 0;
-  const journal = clamp(completion * 0.6 + quality * 0.4);
+  const journal = clamp(completion * 0.45 + avgQuality * 0.55);
 
   const planned = (plan.riskPerTradePct / 100) * plan.startingCapital;
   const devs = trades.map((t) => Math.abs(t.riskAmount - planned) / Math.max(1, planned));

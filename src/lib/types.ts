@@ -158,6 +158,7 @@ export interface Journal {
   lesson: string;
   setup: string;
   grade: "A" | "B" | "C" | "D";
+  qualityScore: number; // 0–100 strict reflection quality
   debrief: string;
   at: number;
 }
@@ -214,6 +215,13 @@ export interface Toast { id: string; kind: "ok" | "warn" | "bad" | "info"; text:
 
 export interface PlanAmendment { version: number; at: number; reason: string; }
 
+export type IndicatorId = "sma" | "ema" | "bb" | "vwap" | "volume" | "rsi" | "macd" | "atr";
+export interface ActiveIndicator {
+  uid: string;
+  id: IndicatorId;
+  params: Record<string, number>;
+}
+
 export interface AppState {
   hydrated: boolean;
   name: string;
@@ -253,6 +261,8 @@ export interface AppState {
 
   tourDone: boolean;
   tourOpen: boolean;
+
+  indicators: ActiveIndicator[];
 
   market: Record<string, MarketState>;
   seed: number;

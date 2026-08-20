@@ -2,7 +2,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useApp, gateCheck } from "../lib/store";
 import { ASSETS, EMOTIONS, assetMeta, type Checkin, type EmotionTag, type OrderType, type Side } from "../lib/types";
 import { atr } from "../lib/market";
+import { computeIndicators } from "../lib/indicators";
 import { CandleChart } from "../components/Chart";
+import IndicatorsManager from "../components/Indicators";
 import { Flash, Ic, Modal, Spark, Toggle, fmtPx, fmtR, fmtSigned } from "../components/ui";
 
 export default function Terminal() {
@@ -15,6 +17,8 @@ export default function Terminal() {
   const changePct = ((m.price - m.refClose) / m.refClose) * 100;
   const a14 = atr(m);
   const stressed = !!m.stress;
+  const ind = computeIndicators(m.candles, s.indicators);
+  const [indOpen, setIndOpen] = useState(false);
 
   return (
     <div className="h-full flex flex-col gap-3 p-3 overflow-hidden">
@@ -33,7 +37,7 @@ export default function Terminal() {
         </div>
       )}
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[218px_1fr_288px] gap-3 min-h-0 overflow-y-auto lg:overflow-visible">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[218px_1fr_288px] gap-3 min-h-0 overflow-y-auto">
         {/* watchlist + news */}
         <div className="flex flex-col gap-3 min-h-0">
           <div className="panel p-2.5 flex-1 min-h-[240px] overflow-y-auto" data-tour="watchlist">
@@ -102,8 +106,16 @@ export default function Terminal() {
                 }}>
                 REGIME: {m.regime.replace("-", " ").toUpperCase()}
               </span>
+              <button onClick={() => setIndOpen(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11.5px] font-bold transition-all hover:-translate-y-[1px]"
+                title="Technical indicators"
+                style={{ background: "rgba(57,197,165,0.1)", border: "1px solid rgba(57,197,165,0.4)", color: "#39c5a5" }}>
+                <Ic.pulse size={13} /> Indicators
+                <span className="num text-[10px] px-1.5 rounded-full" style={{ background: "rgba(57,197,165,0.16)" }}>{s.indicators.length}</span>
+              </button>
             </div>
-            <CandleChart candles={m.candles} live={m.price} height={308} lines={[
+            <CandleChart candles={m.candles} live={m.price} height={308}
+              overlays={ind.overlays} panes={ind.panes} showVolume={ind.showVolume} lines={[
               ...(pos ? [{ price: pos.avgEntry, color: "#eef3fa", label: "ENTRY", dash: [2, 3] }] : []),
               ...(pos?.stop != null ? [{ price: pos.stop, color: "#e0564f", label: "STOP" }] : []),
               ...(pos?.target != null ? [{ price: pos.target, color: "#2fb98c", label: "TARGET" }] : []),
@@ -117,6 +129,7 @@ export default function Terminal() {
           {pos ? <ManagePanel key={pos.id} posId={pos.id} /> : <EntryTicket gateOk={gate.ok} gateReason={gate.reason} />}
         </div>
       </div>
+      <IndicatorsManager open={indOpen} onClose={() => setIndOpen(false)} />
     </div>
   );
 }
