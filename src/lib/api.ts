@@ -10,9 +10,19 @@ const BASE = (import.meta as unknown as { env?: Record<string, string> }).env?.V
 export interface ServerScores {
   process?: { score: number; components: Record<string, number> };
   readiness?: {
-    score: number; stage: string; feedback: string[];
+    eligible: boolean;
+    score: number | null;
+    stage: string;
+    gateReasons: string[];
+    feedback: {
+      headline: string;
+      trendDirection: "improving" | "declining" | "stable" | "insufficient_data";
+      strongestArea: string;
+      weakestArea: string;
+      actionableNote: string;
+    } | null;
     gates: { id: string; label: string; pass: boolean; detail: string }[];
-    components: { key: string; label: string; value: number }[];
+    components: { key: string; label: string; value: number }[] | null;
   };
 }
 

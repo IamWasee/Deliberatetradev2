@@ -9,7 +9,7 @@
 import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
 import { computeProcessScore, PROCESS_SQL } from "./processScore.js";
-import { computeReadinessScore } from "./readinessScore.js";
+import { computeReadinessScore, READINESS_SQL } from "./readinessScore.js";
 import { detectTiltSignals, decideCooldown, recordTiltEvents } from "./tiltDetection.js";
 
 export function createScoreRouter(pool) {
@@ -55,7 +55,7 @@ export function createScoreRouter(pool) {
   router.get("/api/scores/readiness", requireAuth, async (req, res, next) => {
     try {
       const [trades, violations, planRow] = await Promise.all([
-        pool.query(PROCESS_SQL.trades, [req.session.userId]),
+        pool.query(READINESS_SQL.trades, [req.session.userId]),
         pool.query(PROCESS_SQL.violations, [req.session.userId]),
         pool.query(PROCESS_SQL.plan, [req.session.userId]),
       ]);
@@ -69,9 +69,7 @@ export function createScoreRouter(pool) {
         stage: r.stage,
         feedback: r.feedback,
         gates: r.gates.map(({ id, label, pass, detail }) => ({ id, label, pass, detail })),
-        components: r.components.map(({ key, label, value }) => ({
-          key, label, value: Math.round(value * 100),
-        })),
+        components: r.components, // already rounded 0–100 rates by the adapter
         updatedAt: Date.now(),
       });
     } catch (err) { next(err); }

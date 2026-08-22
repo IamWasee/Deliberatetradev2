@@ -1,166 +1,196 @@
-/* Readiness & graduation — quantity is a gate, behavior is the score. */
+/* Readiness — gated by volume, scored by behavior. Engine: server/scoring/readinessEngine.ts */
+import { useMemo } from "react";
 import { useApp } from "../lib/store";
-import { READINESS_GATES, STAGES, computeReadiness } from "../lib/coaching";
-import { Bar, Gauge, Ic } from "../components/ui";
+import { computeReadiness, readinessReportMarkdown, STAGES, STAGE_NOTES } from "../lib/readinessAdapter";
+import { Bar, Ic } from "../components/ui";
 
-const STAGE_TONE = ["#e0564f", "#e0a33b", "#6fb6e8", "#b48ef0", "#2fb98c"];
+const TREND_META: Record<string, { label: string; color: string }> = {
+  improving: { label: "▲ improving", color: "#2fb98c" },
+  declining: { label: "▼ declining", color: "#e0564f" },
+  stable: { label: "◆ stable", color: "#6fb6e8" },
+  insufficient_data: { label: "… building data", color: "#93a3ba" },
+};
 
 export default function Readiness() {
-  const { state: s, dispatch } = useApp();
-  const r = computeReadiness(s.trades, s.violations, s.plan);
-  const tone = STAGE_TONE[r.stageIdx];
+  const { state: s } = useApp();
+  const r = useMemo(() => computeReadiness(s.trades, s.violations, s.plan), [s.trades, s.violations, s.plan]);
+  const trend = r.feedback ? TREND_META[r.feedback.trendDirection] : TREND_META.insufficient_data;
 
   const exportReport = () => {
-    const lines = [
-      "# DeliberateTrade — Readiness Report",
-      `Trader: ${s.name || "Anonymous"} · Generated ${new Date().toISOString()}`,
-      "",
-      `## Readiness Score: ${r.score}/100 — ${r.stage}`,
-      "",
-      "## Gates",
-      ...r.gates.map((g) => `- [${g.pass ? "x" : " "}] ${g.label} — ${g.detail}`),
-      "",
-      "## Components",
-      ...r.components.map((c) => `- ${c.label}: ${Math.round(c.value * 100)}/100`),
-      "",
-      "## Coach feedback",
-      ...r.feedback.map((f) => `- ${f}`),
-      "",
-      `## Record`,
-      `- Closed trades: ${s.trades.length} · breaches: ${s.breaches} · stress survived: ${s.stressSurvived}/${s.stressSeen}`,
-      `- Friction mode: ${s.friction} (easy trades are excluded from scoring)`,
-      "",
-      "_Educational simulation with virtual money only — not financial advice._",
-    ].join("\n");
-    const blob = new Blob([lines], { type: "text/markdown" });
+    const md = readinessReportMarkdown(r, s.plan, s.name);
+    const blob = new Blob([md], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "deliberatetrade-readiness.md";
+    a.href = url;
+    a.download = "deliberatetrade-readiness-report.md";
     a.click();
-    URL.revokeObjectURL(a.href);
+    URL.revokeObjectURL(url);
   };
 
   return (
     <div className="h-full overflow-y-auto p-3 md:p-4">
       <div className="max-w-[980px] mx-auto space-y-3.5">
-        {/* stage hero */}
-        <div className="panel p-5 md:p-6" style={{ borderLeft: `3px solid ${tone}` }}>
-          <div className="flex flex-col md:flex-row md:items-center gap-5">
-            <Gauge value={r.score} label="Readiness" size={132} />
-            <div className="flex-1">
-              <p className="lbl mb-1">Current stage</p>
-              <h2 className="font-display font-bold text-[22px] leading-tight mb-2" style={{ color: tone }}>{r.stage}</h2>
-              <div className="flex gap-1 mb-3">
+
+        {/* header: score + stage track */}
+        <div className="panel p-5 animate-fade-in">
+          <div className="flex flex-wrap items-start gap-6">
+            <div className="min-w-[210px]">
+              <p className="lbl mb-2">Real-money readiness</p>
+              {r.score === null ? (
+                <div>
+                  <p className="font-display font-bold text-[42px] leading-none text-fog-500">—</p>
+                  <p className="text-[11px] text-amber mt-2 leading-snug max-w-[220px]">
+                    Score unlocks once the minimum gates pass. Until then, quantity is the only thing that matters.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex items-baseline gap-2">
+                  <p className={`font-display font-bold text-[54px] leading-none ${r.score >= 70 ? "text-up" : r.score >= 45 ? "text-amber" : "text-fog-100"}`}>
+                    {r.score}
+                  </p>
+                  <span className="num text-[13px] text-fog-500">/100</span>
+                </div>
+              )}
+              <p className="mt-2 inline-flex items-center gap-2 text-[12.5px] font-display font-bold px-2.5 py-1 rounded-md"
+                style={{
+                  background: r.stageIdx >= 3 ? "rgba(47,185,140,0.12)" : r.stageIdx === 2 ? "rgba(111,182,232,0.12)" : "rgba(224,163,59,0.1)",
+                  border: `1px solid ${r.stageIdx >= 3 ? "rgba(47,185,140,0.45)" : r.stageIdx === 2 ? "rgba(111,182,232,0.45)" : "rgba(224,163,59,0.4)"}`,
+                  color: r.stageIdx >= 3 ? "#2fb98c" : r.stageIdx === 2 ? "#6fb6e8" : "#e0a33b",
+                }}>
+                {r.stage}
+              </p>
+              <p className="text-[11px] text-fog-500 mt-2 leading-snug max-w-[250px]">{STAGE_NOTES[r.stage]}</p>
+            </div>
+
+            {/* stage track */}
+            <div className="flex-1 min-w-[260px]">
+              <div className="hidden md:flex items-center gap-1 mb-2">
                 {STAGES.map((st, i) => (
-                  <div key={st} className="h-[5px] flex-1 rounded-full transition-all duration-500"
-                    title={st}
-                    style={{ background: i <= r.stageIdx ? STAGE_TONE[i] : "#16213a" }} />
+                  <div key={st} className="flex-1">
+                    <div className="h-[6px] rounded-full transition-all duration-500"
+                      style={{
+                        background: i < r.stageIdx ? "#39c5a5" : i === r.stageIdx ? "#e0a33b" : "#16213a",
+                        boxShadow: i === r.stageIdx ? "0 0 12px rgba(224,163,59,0.35)" : undefined,
+                      }} />
+                  </div>
                 ))}
               </div>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="space-y-1.5">
                 {STAGES.map((st, i) => (
-                  <span key={st} className="text-[9px] num px-1.5 py-0.5 rounded-full"
-                    style={{
-                      background: i === r.stageIdx ? `${STAGE_TONE[i]}22` : "#0a1120",
-                      border: `1px solid ${i === r.stageIdx ? STAGE_TONE[i] : "#1c2942"}`,
-                      color: i === r.stageIdx ? STAGE_TONE[i] : "#4d5f78",
-                    }}>{st}</span>
+                  <div key={st} className="flex items-center gap-2.5 text-[12px] transition-all"
+                    style={{ color: i === r.stageIdx ? "#eef3fa" : i < r.stageIdx ? "#39c5a5" : "#4d5f78" }}>
+                    <span className={`inline-flex ${i === r.stageIdx ? "text-amber" : ""}`}>
+                      {i < r.stageIdx ? <Ic.check size={13} /> : i === r.stageIdx ? <Ic.flag size={13} /> : <Ic.clock size={13} />}
+                    </span>
+                    <span className={i === r.stageIdx ? "font-semibold" : ""}>{st}</span>
+                    {i === 4 && <span className="lbl !text-[8px] ml-1">prop-challenge grade</span>}
+                  </div>
                 ))}
               </div>
             </div>
-            <button className="btn btn-teal !py-2 shrink-0" onClick={exportReport}>
+
+            <button className="btn btn-ghost shrink-0" onClick={exportReport}>
               <Ic.download size={14} /> Export report
             </button>
           </div>
-          <p className="text-[11.5px] text-fog-500 mt-4 leading-relaxed max-w-3xl">
-            Quantity is only a <strong className="text-fog-300">gate</strong> — once {READINESS_GATES.minTrades} trades and {READINESS_GATES.minDays} days are in, more volume adds nothing.
-            Only better behavior moves this number. A trader with 60 disciplined trades outranks one with 500 sloppy ones.
+          <p className="text-[10.5px] text-fog-600 mt-4 pt-3 border-t border-line-soft leading-snug">
+            Trade count and day count are <strong className="text-fog-400">gates only</strong> — once passed, more volume adds nothing. The score is 100% behavior quality: adherence, post-loss discipline, consistency, sizing, setups, emotions. The weighting itself is deliberately private, so you can't optimize the number instead of the behavior.
           </p>
         </div>
 
-        <div className="grid lg:grid-cols-[1fr_340px] gap-3.5">
-          <div className="space-y-3.5">
-            {/* gates */}
-            <div className="panel p-4">
-              <p className="lbl mb-3">Minimum gates — fail one and the score is capped</p>
-              <div className="grid sm:grid-cols-2 gap-2.5">
-                {r.gates.map((g) => (
-                  <div key={g.id} className="flex items-start gap-2.5 p-3 rounded-lg"
-                    style={{ background: g.pass ? "rgba(47,185,140,0.06)" : "rgba(224,86,79,0.05)", border: `1px solid ${g.pass ? "rgba(47,185,140,0.35)" : "rgba(224,86,79,0.35)"}` }}>
-                    <span className={`mt-[1px] inline-flex shrink-0 ${g.pass ? "text-up" : "text-down"}`}>
-                      {g.pass ? <Ic.check size={15} /> : <Ic.x size={15} />}
-                    </span>
-                    <div>
-                      <p className="text-[12px] font-semibold text-fog-200 leading-snug">{g.label}</p>
-                      <p className={`num text-[10.5px] mt-0.5 ${g.pass ? "text-up" : "text-down"}`}>{g.detail}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* components */}
-            <div className="panel p-4">
-              <p className="lbl mb-3">What drives the score</p>
-              <div className="space-y-3">
-                {r.components.map((c) => (
-                  <div key={c.key}>
-                    <div className="flex justify-between text-[11.5px] mb-1">
-                      <span className="text-fog-300 font-medium">{c.label}</span>
-                      <span className="num" style={{ color: c.value >= 0.8 ? "#2fb98c" : c.value >= 0.55 ? "#e0a33b" : "#e0564f" }}>{Math.round(c.value * 100)}</span>
-                    </div>
-                    <Bar value={c.value} color={c.value >= 0.8 ? "#2fb98c" : c.value >= 0.55 ? "#e0a33b" : "#e0564f"} h={6} />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* feedback */}
-            <div className="panel p-4">
-              <p className="lbl mb-3">Why you're at this stage — and what moves it</p>
-              <div className="space-y-2.5">
-                {r.feedback.map((f, i) => (
-                  <p key={i} className="flex gap-2.5 text-[12.5px] text-fog-200 leading-relaxed">
-                    <span className="mt-[6px] w-1.5 h-1.5 rounded-full shrink-0" style={{ background: tone }} />
-                    {f}
-                  </p>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* graduation checklist */}
-          <div className="space-y-3.5">
-            <div className="panel p-4">
-              <p className="lbl mb-3">Graduation checklist</p>
-              {[
-                { ok: s.trades.length >= READINESS_GATES.minTrades, t: `${READINESS_GATES.minTrades}+ closed trades under realistic friction` },
-                { ok: s.trades.filter((t) => t.friction !== "easy").length >= 30, t: "30+ trades outside Easy mode" },
-                { ok: r.gates.find((g) => g.id === "days")?.pass ?? false, t: `${READINESS_GATES.minDays}+ active trading days` },
-                { ok: r.gates.find((g) => g.id === "clean")?.pass ?? false, t: `Clean ${READINESS_GATES.cleanWindowDays}-day violation window` },
-                { ok: s.stressSurvived >= 3, t: "Survived 3+ stress injections with stop intact" },
-                { ok: s.trades.filter((t) => t.journal && t.journal.qualityScore >= 60).length >= 15, t: "15+ journals at quality 60+" },
-                { ok: r.score >= 85, t: "Readiness ≥ 85 with all gates green" },
-              ].map((c, i) => (
-                <div key={i} className="flex items-center gap-2.5 py-2 border-b border-line-soft last:border-0">
-                  <span className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 ${c.ok ? "text-up" : "text-fog-600"}`}
-                    style={{ border: `1px solid ${c.ok ? "#2fb98c" : "#2a3c5e"}`, background: c.ok ? "rgba(47,185,140,0.1)" : "transparent" }}>
-                    {c.ok && <Ic.check size={11} />}
+        {/* gates */}
+        <div className="panel p-4 animate-fade-in" style={{ animationDelay: "60ms" }}>
+          <p className="lbl mb-3">Minimum gates — pass/fail, never part of the score</p>
+          <div className="grid md:grid-cols-3 gap-2.5">
+            {r.gates.map((g) => (
+              <div key={g.id} className="panel-inset p-3.5" style={{ borderColor: g.pass ? "rgba(47,185,140,0.4)" : undefined }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`inline-flex ${g.pass ? "text-up" : "text-fog-500"}`}>
+                    {g.pass ? <Ic.check size={15} /> : <Ic.lock size={14} />}
                   </span>
-                  <p className={`text-[11.5px] leading-snug ${c.ok ? "text-fog-200" : "text-fog-500"}`}>{c.t}</p>
+                  <p className="text-[12px] font-semibold text-fog-200 leading-tight">{g.label}</p>
+                  <span className={`num text-[12px] font-bold ml-auto ${g.pass ? "text-up" : "text-amber"}`}>{g.detail}</span>
                 </div>
-              ))}
-            </div>
-            <div className="panel p-4">
-              <p className="lbl mb-2">Evidence pack</p>
-              <p className="text-[11.5px] text-fog-500 leading-relaxed mb-3">
-                The export bundles your scores, gates, record and coach feedback — for a mentor, a coach, or a prop-firm application.
-              </p>
-              <button className="btn btn-ghost w-full" onClick={exportReport}><Ic.download size={13} /> Download .md report</button>
-              <p className="text-[10px] text-fog-600 mt-2.5 num">Simulation record only — never a certification.</p>
-            </div>
+                <Bar value={g.progress} color={g.pass ? "#2fb98c" : "#e0a33b"} h={4} />
+              </div>
+            ))}
           </div>
+          {!r.eligible && (
+            <div className="mt-3 rounded-lg px-3.5 py-2.5 text-[11.5px] leading-snug animate-fade-in"
+              style={{ background: "rgba(224,163,59,0.07)", border: "1px solid rgba(224,163,59,0.35)", color: "#c3cfdf" }}>
+              <strong className="text-amber">Engine verdict: </strong>{r.gateReasons.join(" ")}
+            </div>
+          )}
         </div>
+
+        {/* behavior components */}
+        <div className="panel p-4 animate-fade-in" style={{ animationDelay: "120ms" }}>
+          <div className="flex items-baseline justify-between mb-3">
+            <p className="lbl">Behavior components — the actual score</p>
+            <span className="num text-[10px] text-fog-600">rates, not counts</span>
+          </div>
+          {r.components === null ? (
+            <p className="text-[12px] text-fog-600 leading-relaxed max-w-xl">
+              Component breakdown appears once you're eligible. This is by design — the engine refuses to score a sample it can't trust yet.
+            </p>
+          ) : (
+            <div className="grid md:grid-cols-2 gap-x-8 gap-y-3.5">
+              {r.components.map((c) => {
+                const col = c.value >= 0.75 ? "#2fb98c" : c.value >= 0.5 ? "#e0a33b" : "#e0564f";
+                return (
+                  <div key={c.key}>
+                    <div className="flex justify-between items-baseline mb-1.5">
+                      <span className="text-[12px] text-fog-300 font-medium">{c.label}</span>
+                      <span className="num text-[13px] font-semibold" style={{ color: col }}>{Math.round(c.value * 100)}</span>
+                    </div>
+                    <Bar value={c.value} color={col} h={6} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* coach feedback */}
+        <div className="panel p-4 animate-fade-in" style={{ animationDelay: "180ms" }}>
+          <p className="lbl mb-3 flex items-center gap-2 text-teal"><Ic.brain size={13} /> Coach assessment</p>
+          {r.feedback ? (
+            <div className="space-y-3.5">
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-[14px] text-fog-100 font-medium leading-snug flex-1 min-w-[240px]">{r.feedback.headline}</p>
+                <span className="num text-[11px] font-bold px-2.5 py-1 rounded-full shrink-0"
+                  style={{ background: "#0a1120", border: `1px solid ${trend.color}55`, color: trend.color }}>
+                  {trend.label}
+                </span>
+              </div>
+              {r.feedback.strongestArea && (
+                <div className="grid sm:grid-cols-2 gap-2.5">
+                  <div className="panel-inset p-3">
+                    <p className="lbl !text-[8.5px] mb-1 text-up">Strongest area</p>
+                    <p className="text-[12.5px] text-fog-200 capitalize">{r.feedback.strongestArea}</p>
+                  </div>
+                  <div className="panel-inset p-3">
+                    <p className="lbl !text-[8.5px] mb-1 text-down">Weakest area</p>
+                    <p className="text-[12.5px] text-fog-200 capitalize">{r.feedback.weakestArea}</p>
+                  </div>
+                </div>
+              )}
+              {r.feedback.actionableNote && (
+                <p className="text-[12.5px] text-fog-300 leading-relaxed pl-3" style={{ borderLeft: "2px solid #39c5a5" }}>
+                  {r.feedback.actionableNote}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-[12px] text-fog-600">
+              Not enough data yet — the coach stays quiet until the gates pass, then reads your trend across the full sample.
+            </p>
+          )}
+        </div>
+
+        <p className="text-[10px] text-fog-600 leading-relaxed pb-2 max-w-2xl">
+          Scores are computed by the readiness engine on every render from your full ledger — never stored, never editable, never sent by the client. In hosted deployments the identical engine runs server-side and the client only displays the verdict. Educational simulation — not financial advice.
+        </p>
       </div>
     </div>
   );
