@@ -1,0 +1,51 @@
+# Security + cache headers — applied by static hosts that support this file
+# (Netlify, Cloudflare Pages). nginx / Express equivalents below.
+
+# ── CACHING ───────────────────────────────────────────────────────
+# Vite emits content-hashed bundles: cache forever.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+/*.js
+  Cache-Control: public, max-age=31536000, immutable
+/*.css
+  Cache-Control: public, max-age=31536000, immutable
+/og.svg
+  Cache-Control: public, max-age=86400
+
+# The shell must revalidate so new hashed bundles are picked up.
+/index.html
+  Cache-Control: no-cache, must-revalidate
+/
+  Cache-Control: no-cache, must-revalidate
+
+# Live / user data is NEVER cached (API blueprint for when the backend ships):
+/api/*
+  Cache-Control: no-store, max-age=0
+  Pragma: no-cache
+#   Express:  res.set("Cache-Control", "no-store, max-age=0");
+#   nginx:    add_header Cache-Control "no-store, max-age=0" always;   # location /api/
+
+# ── SECURITY ──────────────────────────────────────────────────────
+/*
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Cross-Origin-Opener-Policy: same-origin
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' ; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+
+# ── nginx equivalent ──────────────────────────────────────────────
+# add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+# add_header X-Frame-Options "DENY" always;
+# add_header X-Content-Type-Options "nosniff" always;
+# add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+#
+# ── Express equivalent ────────────────────────────────────────────
+# const helmet = require("helmet");
+# app.use(helmet({
+#   hsts: { maxAge: 63072000, includeSubDomains: true, preload: true },
+#   frameguard: { action: "deny" },
+#   noSniff: true,
+#   contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], frameAncestors: ["'none'"] } },
+# }));
