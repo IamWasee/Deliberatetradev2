@@ -1,0 +1,11 @@
+# DeliberateTrade — crawler policy
+# Single-page app: everything renders from one document; there are no
+# user-data routes to keep out of indexes (journals never leave the browser).
+
+User-agent: *
+Allow: /
+
+# Nothing to exclude — no server-rendered private pages exist.
+# Disallow: /api/    (uncomment when a backend with private routes ships)
+
+Sitemap: https://deliberatetrade.app/sitemap.xml
