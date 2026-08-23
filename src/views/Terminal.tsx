@@ -4,7 +4,7 @@ import { useApp, gateCheck } from "../lib/store";
 import { ASSETS, EMOTIONS, assetMeta, type Checkin, type EmotionTag, type OrderType, type Side } from "../lib/types";
 import { atr } from "../lib/market";
 import { computeIndicators } from "../lib/indicators";
-import { CandleChart } from "../components/Chart";
+import TradingChart from "../components/TradingChart";
 import IndicatorsManager from "../components/Indicators";
 import { FirstTradeGate } from "../components/LegalKit";
 import { Skeleton, useBoot } from "../components/Skeleton";
@@ -100,7 +100,7 @@ export default function Terminal() {
                   <h2 className="font-display font-bold text-[19px] text-fog-100">{s.selected}</h2>
                   <span className="lbl !text-[9.5px] px-1.5 py-0.5 rounded" style={{ background: "#111b30", border: "1px solid #1c2942" }}>{meta.name}</span>
                 </div>
-                <p className="text-[11px] text-fog-500 num">ATR(14) {a14.toFixed(2)} · drag to pan · wheel to zoom · dbl-click = live</p>
+                <p className="text-[11px] text-fog-500 num">ATR(14) {a14.toFixed(2)} · drag to pan · wheel to zoom · drag the red/green lines to move stop &amp; target</p>
               </div>
               <div className="flex items-baseline gap-2.5 ml-auto">
                 <Flash value={m.price} format={(n) => fmtPx(n, n >= 1000 ? 0 : 2)} className="text-[26px] font-semibold text-fog-100" />
@@ -120,13 +120,25 @@ export default function Terminal() {
                 REGIME: {m.regime.replace("-", " ").toUpperCase()}
               </span>
             </div>
-            <CandleChart candles={m.candles} live={m.price} height={288}
-              overlays={ind.overlays} panes={ind.panes} showVolume={ind.showVolume}
-              lines={[
-                ...(pos ? [{ price: pos.avgEntry, color: "#eef3fa", label: "ENTRY", dash: [2, 3] }] : []),
-                ...(pos?.stop != null ? [{ price: pos.stop, color: "#e0564f", label: "STOP" }] : []),
-                ...(pos?.target != null ? [{ price: pos.target, color: "#2fb98c", label: "TARGET" }] : []),
-              ]} />
+            <TradingChart
+              symbol={s.selected}
+              candles={m.candles}
+              live={m.price}
+              decimals={meta.decimals + 1}
+              height={288}
+              indicators={ind}
+              entry={pos ? pos.avgEntry : undefined}
+              stop={pos?.stop ?? undefined}
+              target={pos?.target ?? undefined}
+              onPriceChange={(kind, price) => {
+                if (!pos) return;
+                dispatch({
+                  type: "ADJUST_BRACKET", id: pos.id,
+                  stop: kind === "stop" ? price : pos.stop,
+                  target: kind === "target" ? price : pos.target,
+                });
+              }}
+            />
           </div>
           <DeskTables />
         </div>
