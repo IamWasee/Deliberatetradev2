@@ -11,10 +11,6 @@
  *   - Once gated, the score is 100% behavior-quality driven.
  *   - Adding more trades after the gate does NOT increase the score.
  *     Only better rate-based behavior does.
- *
- * NOTE: the client demo build imports this very file (single source of
- * truth) via src/lib/readinessAdapter.ts. In a hosted deployment this
- * module lives behind the score API and the client never sees it.
  */
 
 // ---------- Types ----------

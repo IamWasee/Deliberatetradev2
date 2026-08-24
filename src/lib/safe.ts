@@ -1,4 +1,4 @@
-/* Environment-proof primitives: storage, cloning, type coercion. */
+/* Environment-proof primitives: storage, cloning, coercion. */
 
 export function safeGet(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -12,13 +12,10 @@ export function safeRemove(key: string): void {
 
 /** structuredClone with a JSON fallback for older engines. */
 export function deepClone<T>(v: T): T {
-  try {
-    if (typeof structuredClone === "function") return structuredClone(v);
-  } catch { /* fall through */ }
+  try { if (typeof structuredClone === "function") return structuredClone(v); } catch { /* fall through */ }
   return JSON.parse(JSON.stringify(v)) as T;
 }
 
-/* coercion helpers for rehydrating persisted data */
 export const num = (v: unknown, d: number): number =>
   typeof v === "number" && Number.isFinite(v) ? v : d;
 export const str = (v: unknown, d: string): string => (typeof v === "string" ? v : d);

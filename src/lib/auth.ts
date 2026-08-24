@@ -163,7 +163,6 @@ export function recordLoginFail(): LockState {
   safeSet(K_LOCK_DEVICE, JSON.stringify(dev));
   return lockInfo();
 }
-
 export function resetLockout(): void {
   safeRemove(K_LOCK);
   safeRemove(K_LOCK_DEVICE);
@@ -171,8 +170,7 @@ export function resetLockout(): void {
 
 /* ---------------------------- session ------------------------------- */
 /*
-  Cookie config. HttpOnly can ONLY be set by a server's Set-Cookie header —
-  the server blueprint is:
+  HttpOnly can ONLY be set by a server's Set-Cookie header. Blueprint:
     Set-Cookie: dt_session=<token>; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict
 */
 const SESSION_MS = 60 * 60 * 1000;
@@ -190,9 +188,7 @@ function generateToken(): string {
   crypto.getRandomValues(a);
   return Array.from(a).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-function encodeSession(s: Session): string {
-  return btoa(unescape(encodeURIComponent(JSON.stringify(s))));
-}
+function encodeSession(s: Session): string { return btoa(unescape(encodeURIComponent(JSON.stringify(s)))); }
 function decodeSession(raw: string): Session | null {
   try {
     const s = JSON.parse(decodeURIComponent(escape(atob(raw)))) as Session;
@@ -200,8 +196,12 @@ function decodeSession(raw: string): Session | null {
   } catch { return null; }
 }
 function cookiesAvailable(): boolean {
-  try { document.cookie = "dt_probe=1; Path=/"; const ok = document.cookie.includes("dt_probe"); document.cookie = "dt_probe=; Max-Age=0; Path=/"; return ok; }
-  catch { return false; }
+  try {
+    document.cookie = "dt_probe=1; Path=/";
+    const ok = document.cookie.includes("dt_probe");
+    document.cookie = "dt_probe=; Max-Age=0; Path=/";
+    return ok;
+  } catch { return false; }
 }
 function cookieAttrs(maxAgeSec: number): string {
   return [
@@ -228,14 +228,12 @@ export function createSession(email: string): Session {
   resetLockout();
   return s;
 }
-
 function readRawCookie(): string | null {
   try {
     const m = document.cookie.split("; ").find((c) => c.startsWith(K_SESSION + "="));
     return m ? m.slice(K_SESSION.length + 1) : null;
   } catch { return null; }
 }
-
 export function loadSession(): Session | null {
   const raw = readRawCookie();
   if (raw) return decodeSession(raw);
@@ -244,7 +242,6 @@ export function loadSession(): Session | null {
     return fb ? (JSON.parse(fb) as Session) : null;
   } catch { return null; }
 }
-
 export function touchSession(): void {
   const s = loadSession();
   if (!s) return;
@@ -253,7 +250,6 @@ export function touchSession(): void {
     try { sessionStorage.setItem(K_SESSION_FB, JSON.stringify(s)); } catch { /* none */ }
   }
 }
-
 export function isSessionValid(): boolean {
   const s = loadSession();
   if (!s) return false;
@@ -264,7 +260,6 @@ export function isSessionValid(): boolean {
   if (!acct || !acct.verified || acct.email !== s.email) return false;
   return true;
 }
-
 export function clearSession(): void {
   try { document.cookie = `${K_SESSION}=; Path=/; Max-Age=0; SameSite=Strict${window.isSecureContext ? "; Secure" : ""}`; } catch { /* blocked */ }
   try { sessionStorage.removeItem(K_SESSION_FB); } catch { /* blocked */ }
@@ -272,13 +267,11 @@ export function clearSession(): void {
 
 /* ------------------------- verification codes ----------------------- */
 export const VERIFICATION_MS = 10 * 60 * 1000;
-
 export function generateCode(): string {
   const a = new Uint32Array(1);
   crypto.getRandomValues(a);
   return String(a[0] % 1_000_000).padStart(6, "0");
 }
-
 export function issueVerification(a: StoredAccount): StoredAccount {
   a.pendingCode = generateCode();
   a.pendingCodeExpiresAt = Date.now() + VERIFICATION_MS;
@@ -292,7 +285,6 @@ export function codeExpiresAt(a: StoredAccount): number { return a.pendingCodeEx
 /* ----------------------- forgot-password tokens --------------------- */
 export interface ResetRequest { token: string; code: string; email: string; expiresAt: number }
 const RESET_MS = 15 * 60 * 1000;
-
 export function createReset(email: string): ResetRequest {
   const r: ResetRequest = { token: generateToken(), code: generateCode(), email, expiresAt: Date.now() + RESET_MS };
   safeSet(K_RESET, JSON.stringify(r));
@@ -301,8 +293,7 @@ export function createReset(email: string): ResetRequest {
 export function loadReset(): ResetRequest | null {
   try {
     const raw = safeGet(K_RESET);
-    if (!raw) return null;
-    return JSON.parse(raw) as ResetRequest;
+    return raw ? (JSON.parse(raw) as ResetRequest) : null;
   } catch { return null; }
 }
 export function clearReset(): void { safeRemove(K_RESET); }

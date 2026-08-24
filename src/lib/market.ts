@@ -1,5 +1,5 @@
 /* Deterministic market simulator — seeded, reproducible sessions. */
-import { ASSETS, type Candle, type MarketState, type Regime, type AssetMeta } from "./types";
+import { ASSETS, type AssetMeta, type Candle, type MarketState, type Regime } from "./types";
 
 export const CANDLE_TICKS = 6;
 export const HISTORY = 240;
@@ -20,7 +20,6 @@ const gauss = (rnd: () => number): number => {
   while (v === 0) v = rnd();
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 };
-
 const pick = <T,>(rnd: () => number, a: T[]): T => a[Math.floor(rnd() * a.length)];
 
 export function createMarket(seed: number): Record<string, MarketState> {
@@ -49,7 +48,7 @@ function genHistory(a: AssetMeta, rnd: () => number): Candle[] {
     const c = Math.max(a.base * 0.2, o + drift * p + shock);
     const h = Math.max(o, c) + Math.abs(gauss(rnd)) * a.vol * p * 0.12;
     const l = Math.max(a.base * 0.15, Math.min(o, c) - Math.abs(gauss(rnd)) * a.vol * p * 0.12);
-    const v = Math.round(1000 + rnd() * 4000 + Math.abs(c - o) / (a.vol * p) * 800);
+    const v = Math.round(1000 + rnd() * 4000 + (Math.abs(c - o) / (a.vol * p)) * 800);
     candles.push({ o, h, l, c, v });
     p = c;
   }
@@ -79,41 +78,35 @@ function atrArr(cs: Candle[]): number {
   return s / (cs.length - 1);
 }
 
-/* one simulation tick per asset */
-export function stepMarket(m: MarketState, a: AssetMeta, rnd: () => number): MarketState {
-  let stress = m.stress;
+/** Advance one asset by one tick (mutates in place — the store drives it). */
+export function stepMarket(m: MarketState, a: AssetMeta, rnd: () => number): void {
   let dir = m.drift;
   let volMul = 1;
-  if (stress) {
-    dir = stress.dir * a.vol * 0.55;
+  if (m.stress) {
+    dir = m.stress.dir * a.vol * 0.55;
     volMul = 2.4;
-    stress = stress.left <= 1 ? null : { ...stress, left: stress.left - 1 };
+    m.stress = m.stress.left <= 1 ? null : { ...m.stress, left: m.stress.left - 1 };
   } else if (rnd() < 0.004) {
     m.drift = (rnd() - 0.5) * a.vol * 0.16;
     dir = m.drift;
   }
   const shock = gauss(rnd) * a.vol * m.price * 0.32 * volMul;
   const price = Math.max(a.base * 0.15, m.price + dir * m.price + shock);
+  m.price = price;
 
-  const candles = m.candles.slice();
-  const last = { ...candles[candles.length - 1] };
-  last.c = price;
-  last.h = Math.max(last.h, price);
-  last.l = Math.min(last.l, price);
-  last.v += Math.round(rnd() * 90);
-  candles[candles.length - 1] = last;
-  let full = candles;
-  let closed = false;
-  if ((candles.length * CANDLE_TICKS) % CANDLE_TICKS === 0 && candles.length > 0 && rndTickNewCandle(rnd)) {
-    full = [...candles.slice(-(HISTORY - 1)), { o: price, h: price, l: price, c: price, v: Math.round(rnd() * 200) }];
-    closed = true;
+  const last = m.candles[m.candles.length - 1];
+  const closed = rnd() < 0.16;
+  if (closed) {
+    m.candles.push({ o: price, h: price, l: price, c: price, v: Math.round(rnd() * 200) });
+    if (m.candles.length > HISTORY) m.candles.shift();
+    m.regime = regimeOf(m.candles);
+  } else {
+    last.c = price;
+    last.h = Math.max(last.h, price);
+    last.l = Math.min(last.l, price);
+    last.v += Math.round(rnd() * 90);
   }
-  return {
-    ...m, candles: full, price, stress,
-    regime: closed ? regimeOf(full) : m.regime,
-  };
 }
-const rndTickNewCandle = (rnd: () => number): boolean => rnd() < 0.16;
 
 const UP_HEADLINES = [
   "{s} beats quarterly estimates; raises full-year guidance",
@@ -129,8 +122,6 @@ const DOWN_HEADLINES = [
   "Downgrade: {s} cut on demand concerns",
   "{s} guidance trimmed; supply costs cited",
 ];
-
 export function pickHeadline(symbol: string, impact: "up" | "down", rnd: () => number): string {
-  const bank = impact === "up" ? UP_HEADLINES : DOWN_HEADLINES;
-  return pick(rnd, bank).replace("{s}", symbol);
+  return pick(rnd, impact === "up" ? UP_HEADLINES : DOWN_HEADLINES).replace("{s}", symbol);
 }

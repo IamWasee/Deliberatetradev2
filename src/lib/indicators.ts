@@ -1,4 +1,9 @@
-/* Technical indicator engine — computed live from the chart's OHLCV candles. */
+/* =====================================================================
+   Technical indicator engine.
+   Every value is computed live from the same OHLCV Candle[] the chart
+   renders — nothing is hardcoded. Warm-up periods are null so the chart
+   simply skips those points.
+   ===================================================================== */
 import type { ActiveIndicator, Candle, IndicatorId } from "./types";
 
 export interface OverlaySeries {
@@ -12,6 +17,7 @@ export interface PaneSeries {
 }
 export interface IndicatorResult { overlays: OverlaySeries[]; panes: PaneSeries[]; showVolume: boolean }
 
+/* ------------------------------- math ------------------------------- */
 const closesOf = (c: Candle[]) => c.map((x) => x.c);
 
 export function sma(values: number[], period: number): (number | null)[] {
@@ -33,7 +39,10 @@ export function ema(values: number[], period: number): (number | null)[] {
   for (let i = 0; i < period; i++) prev += values[i];
   prev /= period;
   out[period - 1] = prev;
-  for (let i = period; i < values.length; i++) { prev = values[i] * k + prev * (1 - k); out[i] = prev; }
+  for (let i = period; i < values.length; i++) {
+    prev = values[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
   return out;
 }
 
@@ -41,7 +50,10 @@ export function rsi(closes: number[], period: number): (number | null)[] {
   const out: (number | null)[] = new Array(closes.length).fill(null);
   if (closes.length <= period) return out;
   let gain = 0, loss = 0;
-  for (let i = 1; i <= period; i++) { const d = closes[i] - closes[i - 1]; if (d >= 0) gain += d; else loss -= d; }
+  for (let i = 1; i <= period; i++) {
+    const d = closes[i] - closes[i - 1];
+    if (d >= 0) gain += d; else loss -= d;
+  }
   let avgG = gain / period, avgL = loss / period;
   out[period] = avgL === 0 ? 100 : 100 - 100 / (1 + avgG / avgL);
   for (let i = period + 1; i < closes.length; i++) {
@@ -53,13 +65,13 @@ export function rsi(closes: number[], period: number): (number | null)[] {
   return out;
 }
 
-export function macd(closes: number[], fast: number, slow: number, signalP: number) {
+export function macd(closes: number[], fast: number, slow: number, signalP: number): { macd: (number | null)[]; signal: (number | null)[]; hist: (number | null)[] } {
   const ef = ema(closes, fast), es = ema(closes, slow);
   const line: (number | null)[] = closes.map((_, i) =>
     ef[i] !== null && es[i] !== null ? (ef[i] as number) - (es[i] as number) : null);
   const startIdx = line.findIndex((v) => v !== null);
   const defined: number[] = [];
-  for (let i = startIdx; i >= 0 && i < line.length; i++) if (line[i] !== null) defined.push(line[i] as number);
+  for (let i = startIdx; i < line.length; i++) defined.push(line[i] as number);
   const sigDef = ema(defined, signalP);
   const signal: (number | null)[] = new Array(closes.length).fill(null);
   for (let i = 0; i < sigDef.length; i++) if (sigDef[i] !== null) signal[startIdx + i] = sigDef[i];
@@ -68,7 +80,7 @@ export function macd(closes: number[], fast: number, slow: number, signalP: numb
   return { macd: line, signal, hist };
 }
 
-export function bollinger(closes: number[], period: number, mult: number) {
+export function bollinger(closes: number[], period: number, mult: number): { upper: (number | null)[]; middle: (number | null)[]; lower: (number | null)[] } {
   const middle = sma(closes, period);
   const upper: (number | null)[] = new Array(closes.length).fill(null);
   const lower: (number | null)[] = new Array(closes.length).fill(null);
@@ -77,7 +89,8 @@ export function bollinger(closes: number[], period: number, mult: number) {
     const m = middle[i] as number;
     const variance = win.reduce((s, v) => s + (v - m) * (v - m), 0) / period;
     const sd = Math.sqrt(variance);
-    upper[i] = m + mult * sd; lower[i] = m - mult * sd;
+    upper[i] = m + mult * sd;
+    lower[i] = m - mult * sd;
   }
   return { upper, middle, lower };
 }
@@ -106,17 +119,21 @@ export function atrSeries(candles: Candle[], period: number): (number | null)[] 
   for (let i = 1; i <= period; i++) prev += tr[i];
   prev /= period;
   out[period] = prev;
-  for (let i = period + 1; i < candles.length; i++) { prev = (prev * (period - 1) + tr[i]) / period; out[i] = prev; }
+  for (let i = period + 1; i < candles.length; i++) {
+    prev = (prev * (period - 1) + tr[i]) / period;
+    out[i] = prev;
+  }
   return out;
 }
 
+/* ----------------------------- registry ----------------------------- */
 export interface ParamDef { key: string; label: string; def: number; min: number; max: number; step: number }
 export interface IndicatorDef { id: IndicatorId; name: string; kind: "overlay" | "pane" | "volume"; desc: string; params: ParamDef[] }
 
 export const INDICATOR_DEFS: IndicatorDef[] = [
   { id: "sma", name: "SMA", kind: "overlay", desc: "Simple moving average of closes.", params: [{ key: "period", label: "Period", def: 20, min: 2, max: 200, step: 1 }] },
   { id: "ema", name: "EMA", kind: "overlay", desc: "Exponential moving average — reacts faster.", params: [{ key: "period", label: "Period", def: 9, min: 2, max: 200, step: 1 }] },
-  { id: "bb", name: "Bollinger Bands", kind: "overlay", desc: "Volatility bands around a moving average.", params: [{ key: "period", label: "Period", def: 20, min: 5, max: 100, step: 1 }, { key: "std", label: "Std Dev", def: 2, min: 0.5, max: 4, step: 0.5 }] },
+  { id: "bb", name: "Bollinger Bands", kind: "overlay", desc: "Volatility bands around a 20-SMA.", params: [{ key: "period", label: "Period", def: 20, min: 5, max: 100, step: 1 }, { key: "std", label: "Std Dev", def: 2, min: 0.5, max: 4, step: 0.5 }] },
   { id: "vwap", name: "VWAP", kind: "overlay", desc: "Volume-weighted average price (session).", params: [] },
   { id: "volume", name: "Volume", kind: "volume", desc: "Volume bars along the chart floor.", params: [] },
   { id: "rsi", name: "RSI", kind: "pane", desc: "Momentum oscillator, 70/30 levels.", params: [{ key: "period", label: "Period", def: 14, min: 2, max: 50, step: 1 }] },
@@ -152,9 +169,9 @@ export const labelOf = (a: ActiveIndicator): string => {
   if (a.id === "atr") return `ATR ${p.period ?? 14}`;
   return d.name;
 };
-
 const labelFor = labelOf;
 
+/** Compute every active indicator against the live candle array. */
 export function computeIndicators(candles: Candle[], active: ActiveIndicator[]): IndicatorResult {
   const closes = closesOf(candles);
   const overlays: OverlaySeries[] = [];
@@ -180,14 +197,20 @@ export function computeIndicators(candles: Candle[], active: ActiveIndicator[]):
       case "vwap":
         overlays.push({ uid: a.uid, label: "VWAP", color: "#e0a33b", width: 1.6, values: vwap(candles) });
         break;
-      case "volume": showVolume = true; break;
-      case "rsi": panes.push({ uid: a.uid, label: labelFor(a), kind: "rsi", a: rsi(closes, p.period ?? 14) }); break;
+      case "volume":
+        showVolume = true;
+        break;
+      case "rsi":
+        panes.push({ uid: a.uid, label: labelFor(a), kind: "rsi", a: rsi(closes, p.period ?? 14) });
+        break;
       case "macd": {
         const m = macd(closes, p.fast ?? 12, p.slow ?? 26, p.signal ?? 9);
         panes.push({ uid: a.uid, label: labelFor(a), kind: "macd", a: m.macd, b: m.signal, c: m.hist });
         break;
       }
-      case "atr": panes.push({ uid: a.uid, label: labelFor(a), kind: "atr", a: atrSeries(candles, p.period ?? 14) }); break;
+      case "atr":
+        panes.push({ uid: a.uid, label: labelFor(a), kind: "atr", a: atrSeries(candles, p.period ?? 14) });
+        break;
     }
   }
   return { overlays, panes, showVolume };

@@ -2,7 +2,7 @@
 <!--
   DeliberateTrade is a client-rendered SPA: one crawlable document (the shell)
   plus the Legal page. In-app views live behind authentication and contain
-  private simulation data — intentionally NOT listed.
+  private simulation data - intentionally NOT listed.
   Replace the domain with your production domain before deploying.
 -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

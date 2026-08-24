@@ -3,16 +3,7 @@
    A 256-bit token lives in same-origin sessionStorage; the store's
    dispatch wrapper stamps every sensitive action; the reducer rejects
    missing/mismatched stamps in constant time before any mutation.
-
-   Server equivalent (Express):
-     app.use((req, res, next) => {
-       if (["POST","PUT","PATCH","DELETE"].includes(req.method)) {
-         const sent = req.header("X-CSRF-Token");
-         if (!sent || !timingSafeEqual(Buffer.from(sent), Buffer.from(req.session.csrf)))
-           return res.status(403).json({ error: "CSRF token invalid" });
-       }
-       next();
-     });
+   Server equivalent lives in the header comment of server/scoring/routes.js.
    ===================================================================== */
 const K_CSRF = "dt:csrf";
 let issuedToken: string | null = null;

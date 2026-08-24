@@ -1,8 +1,6 @@
-/* Server-score bridge. When VITE_API_BASE is configured (production with
-   the Express backend in server/), authoritative scores are fetched; the
-   client never computes-or-sends a score it wants the server to accept —
-   it only DISPLAYS what the server returns. Without a backend, views fall
-   back to the local mirror and label it clearly. */
+/* Server-score bridge. When VITE_API_BASE is configured, authoritative
+   scores are fetched from the Express backend; the client only DISPLAYS
+   what the server returns. Without a backend, views use the local mirror. */
 import { useEffect, useState } from "react";
 
 const BASE = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE ?? "";
@@ -10,19 +8,9 @@ const BASE = (import.meta as unknown as { env?: Record<string, string> }).env?.V
 export interface ServerScores {
   process?: { score: number; components: Record<string, number> };
   readiness?: {
-    eligible: boolean;
-    score: number | null;
-    stage: string;
-    gateReasons: string[];
-    feedback: {
-      headline: string;
-      trendDirection: "improving" | "declining" | "stable" | "insufficient_data";
-      strongestArea: string;
-      weakestArea: string;
-      actionableNote: string;
-    } | null;
+    score: number; stage: string; feedback: string[];
     gates: { id: string; label: string; pass: boolean; detail: string }[];
-    components: { key: string; label: string; value: number }[] | null;
+    components: { key: string; label: string; value: number }[];
   };
 }
 
@@ -37,13 +25,11 @@ export function useServerScores(): { scores: ServerScores | null; source: "serve
     const load = async () => {
       try {
         const [p, r] = await Promise.all([
-          fetch(`${BASE}/api/scores/process`, { credentials: "include" }).then((x) => (x.ok ? x.json() : null)),
-          fetch(`${BASE}/api/scores/readiness`, { credentials: "include" }).then((x) => (x.ok ? x.json() : null)),
+          fetch(BASE + "/api/scores/process", { credentials: "include" }).then((x) => (x.ok ? x.json() : null)),
+          fetch(BASE + "/api/scores/readiness", { credentials: "include" }).then((x) => (x.ok ? x.json() : null)),
         ]);
         if (live) setScores({ process: p ?? undefined, readiness: r ?? undefined });
-      } catch {
-        /* offline → keep local estimates */
-      }
+      } catch { /* offline -> keep local estimates */ }
     };
     load();
     const iv = setInterval(load, 30_000);
