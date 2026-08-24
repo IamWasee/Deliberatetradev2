@@ -1,279 +1,626 @@
 /* =====================================================================
-   DeliberateTrade store — market loop, order engine, risk enforcement,
-   journals. All state flows through one reducer. Owner sessions
-   (abdullahwasee86@gmail.com) stand the enforcement gates down.
+   DeliberateTrade store - market loop, order engine, risk enforcement,
+   tilt detection wiring, journals, missions. All state changes flow
+   through one reducer with a CSRF checkpoint; scores are derived, never
+   stored, and can't be dispatched.
    ===================================================================== */
 import {
   createContext, useCallback, useContext, useEffect, useMemo, useReducer,
   type Dispatch, type ReactNode,
 } from "react";
 import {
-  ASSETS, assetMeta, buildDebrief, createMarket, emotionLabel, isAdminEmail,
-  journalGate, journalQualityScore, mulberry32, stepMarket,
-  type Checkin, type EmotionTag, type Journal, type MarketState, type Plan,
-  type Position, type Side, type Toast, type Trade, type Violation,
-} from "./engine";
+  ASSETS, assetMeta,
+  type ActiveIndicator,
+  type Checkin, type FrictionMode, type Journal, type LogEntry, type LogKind,
+  type MarketState, type Mission, type NewsItem, type Order, type Plan,
+  type PlanVersion, type Position, type Review, type Side, type Toast, type Trade,
+  type Violation,
+} from "./types";
+import { CANDLE_TICKS, createMarket, mulberry32, pickHeadline, regimeOf } from "./market";
+import { buildDebrief, detectTiltSignals, generateMissions, TILT_META } from "./coaching";
+import { deepClone, nid, num, str, arr, obj, bool, safeGet, safeRemove } from "./safe";
+import { writeTable } from "./db";
+import { journalGate, journalQualityScore } from "./journalQuality";
+import { sanitizeText, rateLimited } from "./auth";
+import { isValidCsrfToken, issueCsrfToken } from "./csrf";
+import { defaultIndicators, defOf, INDICATOR_DEFS } from "./indicators";
+import { isAdminSession, logGate } from "./admin";
 
-const LS_KEY = "dt:store:v3";
-const LS_EMAIL = "dt:active_email";
+const LS_KEY = "dt:store:v2";
 export const TICK_MS = 850;
 
 /* ------------------------------ state ------------------------------- */
 export interface AppState {
-  email: string | null;
-  plan: Plan;
-  cash: number; equity: number; sessionStartEquity: number;
-  market: Record<string, MarketState>;
-  positions: Position[]; trades: Trade[]; violations: Violation[];
-  selected: string; now: number; seed: number;
-  toasts: Toast[]; journalDue: string[];
+  name: string;
+  plan: Plan | null;
+  planHistory: PlanVersion[];
+  friction: FrictionMode;
+  stressMode: boolean;
+  cash: number; equity: number; peakEquity: number; sessionStartEquity: number;
+  session: number; sessionStartTick: number;
+  positions: Position[]; orders: Order[]; trades: Trade[];
+  reviews: Review[]; missions: Mission[]; practiceScore: number;
+  violations: Violation[]; news: NewsItem[]; log: LogEntry[]; toasts: Toast[];
+  journalDue: string[];
   lock: { reason: string; loss: number } | null;
-  stressMode: boolean; stressSeen: number; stressSurvived: number;
-  lossesThisSession: number;
+  cooldownUntil: number; tiltReason: string | null;
+  breaches: number; stressSeen: number; stressSurvived: number; lossStreak: number;
+  tiltHandled: string[];
+  tourDone: boolean; tourOpen: boolean;
+  legalAcceptedAt: number; tradeDisclaimerShown: boolean;
+  indicators: ActiveIndicator[];
+  market: Record<string, MarketState>;
+  seed: number; now: number; lastNewsTick: number; selected: string;
   hydrated: boolean;
 }
 
 export type Action =
   | { type: "TICK" }
-  | { type: "SIGN_IN"; email: string }
-  | { type: "SIGN_OUT" }
   | { type: "SELECT"; symbol: string }
-  | { type: "PLACE_ORDER"; symbol: string; side: Side; qty: number; stop: number | null; target: number | null; setup: string; checkin: Checkin; override: boolean }
+  | { type: "CREATE_PLAN"; plan: Plan; name: string; friction: FrictionMode; legalAcceptedAt: number }
+  | { type: "AMEND_PLAN"; plan: Plan; reason: string }
+  | { type: "SET_FRICTION"; mode: FrictionMode }
+  | { type: "TOGGLE_STRESS" }
+  | { type: "PLACE_ORDER"; symbol: string; orderType: "market" | "limit" | "stop"; side: Side; qty: number; trigger: number | null; stop: number | null; target: number | null; setup: string; checkin: Checkin; override: boolean }
+  | { type: "CANCEL_ORDER"; id: string }
   | { type: "CLOSE_POSITION"; id: string }
   | { type: "ADJUST_BRACKET"; id: string; stop: number | null; target: number | null }
   | { type: "SUBMIT_JOURNAL"; tradeId: string; journal: Omit<Journal, "debrief" | "at" | "qualityScore"> }
   | { type: "SKIP_JOURNAL"; tradeId: string }
   | { type: "ACK_LOCK" }
-  | { type: "TOGGLE_STRESS" }
-  | { type: "DISMISS_TOAST"; id: string };
-
-/* ------------------------------ helpers ----------------------------- */
-let n = 0;
-const nid = (p: string) => `${p}_${Date.now().toString(36)}_${(n++).toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-
-function deepClone<T>(v: T): T {
-  try { if (typeof structuredClone === "function") return structuredClone(v); } catch { /* fall through */ }
-  return JSON.parse(JSON.stringify(v)) as T;
-}
-function safeGet(k: string): string | null { try { return localStorage.getItem(k); } catch { return null; } }
-function safeSet(k: string, v: string): void { try { localStorage.setItem(k, v); } catch { /* full */ } }
-function safeRemove(k: string): void { try { localStorage.removeItem(k); } catch { /* blocked */ } }
-
-export function toast(d: AppState, tone: Toast["tone"], text: string): void {
-  d.toasts = [...d.toasts.slice(-3), { id: nid("t"), tone, text }];
-}
-export function addViolation(d: AppState, rule: string, detail: string): void {
-  d.violations = [...d.violations, { id: nid("v"), rule, detail, ts: Date.now() }];
-}
-
-export const mtm = (p: Position, px: number) =>
-  (p.side === "long" ? px - p.avgEntry : p.avgEntry - px) * p.qty;
-
-export const isOwner = (email: string | null | undefined) => isAdminEmail(email);
-export const sessionIsOwner = () => isAdminEmail(safeGet(LS_EMAIL));
-
-function recomputeEquity(d: AppState): void {
-  d.equity = d.cash + d.positions.reduce((a, p) => a + mtm(p, d.market[p.symbol].price), 0);
-}
-
-export function gateCheck(d: AppState): { ok: boolean; reason: string } {
-  // Owner session: gates stand down so features stay testable at any drawdown.
-  if (isOwner(d.email)) return { ok: true, reason: "" };
-  if (d.lock) return { ok: false, reason: "Daily loss limit breached — session locked." };
-  if (d.journalDue.length > 0) return { ok: false, reason: "File the pending post-trade journal before your next order." };
-  return { ok: true, reason: "" };
-}
+  | { type: "END_SESSION" }
+  | { type: "RESOLVE_REVIEW"; id: string; again: boolean }
+  | { type: "DISMISS_TOAST"; id: string }
+  | { type: "RESET_ALL" }
+  | { type: "OPEN_TOUR"; open: boolean }
+  | { type: "TOUR_FINISHED" }
+  | { type: "SET_INDICATORS"; indicators: ActiveIndicator[] }
+  | { type: "ACK_TRADE_DISCLAIMER" };
 
 /* --------------------------- fresh state ---------------------------- */
-const DEFAULT_PLAN: Plan = {
-  version: 1, startingCapital: 25000, riskPerTradePct: 1, maxDailyLossPct: 3,
-  setups: ["Breakout", "Pullback", "Reversal", "Range fade"],
-};
-
 function freshState(): AppState {
   return {
-    email: null, plan: DEFAULT_PLAN,
-    cash: DEFAULT_PLAN.startingCapital, equity: DEFAULT_PLAN.startingCapital,
-    sessionStartEquity: DEFAULT_PLAN.startingCapital,
-    market: createMarket(1),
-    positions: [], trades: [], violations: [],
-    selected: "NVDA", now: 0, seed: 1,
-    toasts: [], journalDue: [], lock: null,
-    stressMode: false, stressSeen: 0, stressSurvived: 0, lossesThisSession: 0,
-    hydrated: false,
+    name: "", plan: null, planHistory: [], friction: "realistic", stressMode: false,
+    cash: 0, equity: 0, peakEquity: 0, sessionStartEquity: 0,
+    session: 1, sessionStartTick: 0,
+    positions: [], orders: [], trades: [], reviews: [], missions: [], practiceScore: 0,
+    violations: [], news: [], log: [], toasts: [], journalDue: [],
+    lock: null, cooldownUntil: 0, tiltReason: null,
+    breaches: 0, stressSeen: 0, stressSurvived: 0, lossStreak: 0,
+    tiltHandled: [], tourDone: false, tourOpen: false,
+    legalAcceptedAt: 0, tradeDisclaimerShown: false,
+    indicators: defaultIndicators(),
+    market: createMarket(1), seed: 1, now: 0, lastNewsTick: 0,
+    selected: "NVDA", hydrated: false,
   };
+}
+
+/* --------------------------- rehydrate ------------------------------ */
+function sanitizeIndicators(v: unknown): ActiveIndicator[] {
+  const validIds = new Set(INDICATOR_DEFS.map((d) => d.id));
+  const out: ActiveIndicator[] = [];
+  for (const it of arr(v)) {
+    const o = obj(it);
+    if (!o || typeof o.id !== "string" || !validIds.has(o.id as ActiveIndicator["id"])) continue;
+    const id = o.id as ActiveIndicator["id"];
+    const params: Record<string, number> = {};
+    const po = obj(o.params) ?? {};
+    defOf(id).params.forEach((pd) => {
+      const raw = po[pd.key];
+      const n = typeof raw === "number" && Number.isFinite(raw) ? raw : pd.def;
+      params[pd.key] = Math.min(pd.max, Math.max(pd.min, n));
+    });
+    out.push({ uid: str(o.uid, id + "-" + out.length), id, params });
+  }
+  return out.length ? out : defaultIndicators();
 }
 
 function loadState(): AppState {
   const base = freshState();
   try {
     const raw = safeGet(LS_KEY);
-    const savedEmail = safeGet(LS_EMAIL);
-    if (!raw) {
-      base.email = savedEmail;
-      base.hydrated = true;
-      return base;
+    if (!raw) return { ...base, hydrated: true };
+    const saved = obj(JSON.parse(raw));
+    if (!saved) return { ...base, hydrated: true };
+
+    const market = createMarket(num(saved.seed, base.seed));
+    const symbols = new Set(Object.keys(market));
+
+    const planRaw = obj(saved.plan);
+    let plan: Plan | null = null;
+    if (planRaw) {
+      const setups = arr(planRaw.setups).filter((x): x is string => typeof x === "string");
+      const forbidden = arr(planRaw.forbidden).filter((x): x is string => typeof x === "string");
+      plan = {
+        version: Math.max(1, Math.round(num(planRaw.version, 1))),
+        createdAt: num(planRaw.createdAt, Date.now()),
+        startingCapital: Math.max(1000, num(planRaw.startingCapital, 25000)),
+        riskPerTradePct: num(planRaw.riskPerTradePct, 1),
+        maxDailyLossPct: num(planRaw.maxDailyLossPct, 3),
+        maxOpenRiskPct: num(planRaw.maxOpenRiskPct, 4),
+        maxPositions: Math.max(1, Math.round(num(planRaw.maxPositions, 3))),
+        forbidden,
+        setups: setups.length ? setups : ["Breakout"],
+        note: str(planRaw.note, ""),
+      };
     }
-    const saved = JSON.parse(raw) as Partial<AppState>;
-    base.email = savedEmail ?? null;
-    base.cash = typeof saved.cash === "number" ? saved.cash : base.cash;
-    base.plan = saved.plan ?? base.plan;
-    base.positions = Array.isArray(saved.positions) ? saved.positions as Position[] : [];
-    base.trades = Array.isArray(saved.trades) ? saved.trades as Trade[] : [];
-    base.violations = Array.isArray(saved.violations) ? saved.violations as Violation[] : [];
-    base.journalDue = Array.isArray(saved.journalDue)
-      ? (saved.journalDue as string[]).filter((id) => !(base.trades.find((t) => t.id === id)?.journal))
-      : [];
-    base.stressMode = saved.stressMode === true;
-    base.selected = typeof saved.selected === "string" && base.market[saved.selected] ? saved.selected : "NVDA";
-    recomputeEquity(base);
-    base.sessionStartEquity = base.equity;
-    base.hydrated = true;
-    return base;
+
+    const checkinOf = (v: unknown): Checkin => {
+      const c = obj(v) ?? {};
+      const emo = str(c.emotion, "calm");
+      return {
+        emotion: (["calm", "focused", "fomo", "revenge", "bored", "overconfident", "fearful"].includes(emo) ? emo : "calm") as Checkin["emotion"],
+        arousal: Math.min(10, Math.max(1, num(c.arousal, 4))),
+        thesis: str(c.thesis, "-"),
+        at: num(c.at, Date.now()),
+      };
+    };
+
+    const positions: Position[] = [];
+    for (const p of arr(saved.positions)) {
+      const o = obj(p);
+      if (!o || typeof o.symbol !== "string" || !symbols.has(o.symbol)) continue;
+      positions.push({
+        id: str(o.id, nid("p")), symbol: o.symbol,
+        side: o.side === "short" ? "short" : "long",
+        qty: Math.max(1, num(o.qty, 1)), avgEntry: num(o.avgEntry, market[o.symbol].price),
+        stop: typeof o.stop === "number" && Number.isFinite(o.stop) ? o.stop : null,
+        target: typeof o.target === "number" && Number.isFinite(o.target) ? o.target : null,
+        openedTick: num(o.openedTick, 0), openedTs: num(o.openedTs, Date.now()),
+        riskAmount: num(o.riskAmount, 0), riskPct: num(o.riskPct, 0),
+        setup: str(o.setup, "-"), checkin: checkinOf(o.checkin), override: bool(o.override),
+        fees: num(o.fees, 0), stressHits: num(o.stressHits, 0), stopMovedWorse: bool(o.stopMovedWorse),
+        regime: (["trend-up", "trend-down", "range", "chop"].includes(str(o.regime, "")) ? str(o.regime, "range") : "range") as Position["regime"],
+      });
+    }
+
+    const trades: Trade[] = [];
+    for (const t of arr(saved.trades)) {
+      const o = obj(t);
+      if (!o || typeof o.symbol !== "string") continue;
+      const jr = obj(o.journal);
+      const journal: Journal | null = jr
+        ? {
+            plan: str(jr.plan, "-"), whatHappened: str(jr.whatHappened, "-"),
+            emotionDuring: checkinOf({ emotion: jr.emotionDuring }).emotion,
+            emotionAfter: checkinOf({ emotion: jr.emotionAfter }).emotion,
+            followedRules: jr.followedRules === "no" ? "no" : "yes",
+            rulesNote: str(jr.rulesNote, ""), lesson: str(jr.lesson, "-"),
+            setup: str(jr.setup, "-"),
+            grade: (["A", "B", "C", "D"].includes(str(jr.grade, "")) ? str(jr.grade, "B") : "B") as Journal["grade"],
+            qualityScore: num(jr.qualityScore, 50),
+            debrief: str(jr.debrief, ""), at: num(jr.at, Date.now()),
+          }
+        : null;
+      trades.push({
+        id: str(o.id, nid("tr")), symbol: o.symbol,
+        side: o.side === "short" ? "short" : "long",
+        qty: num(o.qty, 1), entry: num(o.entry, 0), exit: num(o.exit, 0),
+        entryTick: num(o.entryTick, 0), exitTick: num(o.exitTick, 0),
+        entryTs: num(o.entryTs, Date.now()), exitTs: num(o.exitTs, Date.now()),
+        pnl: num(o.pnl, 0), fees: num(o.fees, 0), r: num(o.r, 0),
+        riskAmount: Math.max(1, num(o.riskAmount, 1)), riskPct: num(o.riskPct, 0),
+        setup: str(o.setup, "-"),
+        exitReason: (["stop", "target", "manual", "session"].includes(str(o.exitReason, "")) ? str(o.exitReason, "manual") : "manual") as Trade["exitReason"],
+        checkin: checkinOf(o.checkin), override: bool(o.override),
+        violations: arr(o.violations).filter((x): x is string => typeof x === "string"),
+        friction: (["easy", "realistic", "brutal"].includes(str(o.friction, "")) ? str(o.friction, "realistic") : "realistic") as Trade["friction"],
+        regime: (["trend-up", "trend-down", "range", "chop"].includes(str(o.regime, "")) ? str(o.regime, "range") : "range") as Trade["regime"],
+        stressHits: num(o.stressHits, 0), journal,
+      });
+    }
+    const tradeIds = new Set(trades.map((t) => t.id));
+
+    const s: AppState = {
+      ...base,
+      name: str(saved.name, ""),
+      plan,
+      planHistory: arr(saved.planHistory).map((h) => {
+        const o = obj(h);
+        return { version: num(o?.version, 1), at: num(o?.at, Date.now()), reason: str(o?.reason, "") };
+      }),
+      friction: (["easy", "realistic", "brutal"].includes(str(saved.friction, "")) ? str(saved.friction, "realistic") : "realistic") as AppState["friction"],
+      stressMode: bool(saved.stressMode),
+      cash: num(saved.cash, plan ? plan.startingCapital : 0),
+      equity: 0, peakEquity: num(saved.peakEquity, 0), sessionStartEquity: 0,
+      session: Math.max(1, Math.round(num(saved.session, 1))),
+      sessionStartTick: 0,
+      positions, orders: [], trades,
+      reviews: arr(saved.reviews).map((r) => obj(r)).filter((o): o is Record<string, unknown> => !!o && typeof o.tradeId === "string" && tradeIds.has(o.tradeId as string))
+        .map((o) => ({ id: str(o.id, nid("rv")), tradeId: str(o.tradeId, ""), dueTick: num(o.dueTick, 0), interval: Math.max(10, num(o.interval, 40)), reps: num(o.reps, 0) })),
+      missions: arr(saved.missions).map((m) => obj(m)).filter((o): o is Record<string, unknown> => !!o && typeof o.code === "string")
+        .map((o) => ({
+          id: str(o.id, nid("m")), code: str(o.code, ""), title: str(o.title, "Mission"),
+          why: str(o.why, ""), target: Math.max(1, num(o.target, 1)), progress: num(o.progress, 0),
+          done: bool(o.done), area: str(o.area, "Discipline"),
+        })),
+      practiceScore: num(saved.practiceScore, 0),
+      violations: arr(saved.violations).map((v) => obj(v)).filter((o): o is Record<string, unknown> => !!o)
+        .map((o) => ({ id: str(o.id, nid("v")), rule: str(o.rule, "Rule"), detail: str(o.detail, ""), at: num(o.at, 0), ts: num(o.ts, Date.now()) })),
+      news: arr(saved.news).map((n) => obj(n)).filter((o): o is Record<string, unknown> => !!o && typeof o.symbol === "string")
+        .slice(0, 14)
+        .map((o) => ({ id: str(o.id, nid("n")), symbol: str(o.symbol, ""), headline: str(o.headline, ""), impact: (o.impact === "up" ? "up" : "down") as "up" | "down", tick: num(o.tick, 0), ts: num(o.ts, Date.now()) })),
+      log: arr(saved.log).map((l) => obj(l)).filter((o): o is Record<string, unknown> => !!o)
+        .slice(0, 60)
+        .map((o) => ({ id: str(o.id, nid("lg")), kind: (["fill", "risk", "event", "system", "coach"].includes(str(o.kind, "")) ? str(o.kind, "system") : "system") as LogKind, text: str(o.text, ""), tick: num(o.tick, 0), ts: num(o.ts, Date.now()) })),
+      toasts: [],
+      journalDue: arr(saved.journalDue).filter((id): id is string => typeof id === "string" && tradeIds.has(id) && !trades.find((t) => t.id === id)?.journal),
+      lock: (() => { const o = obj(saved.lock); return o && typeof o.reason === "string" ? { reason: o.reason, loss: num(o.loss, 0) } : null; })(),
+      cooldownUntil: 0, tiltReason: null,
+      breaches: Math.max(0, num(saved.breaches, 0)),
+      stressSeen: Math.max(0, num(saved.stressSeen, 0)),
+      stressSurvived: Math.max(0, num(saved.stressSurvived, 0)),
+      lossStreak: Math.max(0, num(saved.lossStreak, 0)),
+      tiltHandled: arr(saved.tiltHandled).filter((x): x is string => typeof x === "string").slice(-120),
+      tourDone: bool(saved.tourDone), tourOpen: false,
+      legalAcceptedAt: num(saved.legalAcceptedAt, 0), tradeDisclaimerShown: bool(saved.tradeDisclaimerShown),
+      indicators: sanitizeIndicators(saved.indicators),
+      market, seed: num(saved.seed, base.seed), now: 0, lastNewsTick: 0,
+      selected: symbols.has(str(saved.selected, "")) ? str(saved.selected, "NVDA") : "NVDA",
+      hydrated: true,
+    };
+
+    if (arr(saved.orders).length > 0)
+      s.log = [{ id: nid("lg"), kind: "system", text: "Open orders were cancelled when the session reloaded.", tick: 0, ts: Date.now() }, ...s.log];
+
+    s.equity = s.cash + s.positions.reduce((a, p) => a + mtm(p, market[p.symbol].price), 0);
+    s.peakEquity = Math.max(s.peakEquity, s.equity);
+    if (s.plan) s.sessionStartEquity = s.equity;
+    if (!s.missions.length && s.plan) s.missions = generateMissions("adherence", s.plan.setups);
+    return s;
   } catch {
-    base.hydrated = true;
-    return base;
+    return { ...base, hydrated: true };
   }
 }
 
-/* --------------------------- order engine --------------------------- */
-function placeOrder(d: AppState, a: Extract<Action, { type: "PLACE_ORDER" }>): void {
-  const m = d.market[a.symbol];
-  const meta = assetMeta(a.symbol);
-  const px = m.price;
-  const gate = gateCheck(d);
-  if (!gate.ok) { toast(d, "warn", gate.reason); return; }
-  if (d.positions.some((p) => p.symbol === a.symbol)) { toast(d, "warn", `Already holding ${a.symbol}. One position per symbol.`); return; }
+/* ----------------------------- helpers ------------------------------ */
+export const mtm = (p: Position, px: number) =>
+  (p.side === "long" ? px - p.avgEntry : p.avgEntry - px) * p.qty;
 
-  const violations: string[] = [];
-  if (a.override) {
-    addViolation(d, "Risk rule broken", `Oversized ${a.symbol} order placed with explicit acknowledgment.`);
-    violations.push("oversize");
-  }
-  if (!a.stop) {
-    addViolation(d, "No stop-loss", `${a.symbol} ${a.side} opened without a hard stop.`);
-    violations.push("no-stop");
-  }
-
-  const dir = a.side === "long" ? 1 : -1;
-  const riskPerShare = a.stop ? Math.abs(px - a.stop) : px * 0.01;
-  const riskAmount = riskPerShare * a.qty;
-  const cost = px * a.qty;
-  if (cost > d.cash) { toast(d, "warn", "Not enough cash for that size."); return; }
-
-  d.cash -= cost;
-  d.positions.push({
-    id: nid("p"), symbol: a.symbol, side: a.side, qty: a.qty, avgEntry: px,
-    stop: a.stop, target: a.target, openedTick: d.now, openedTs: Date.now(),
-    riskAmount, riskPct: d.equity > 0 ? (riskAmount / d.equity) * 100 : 0,
-    setup: a.setup, checkin: a.checkin, override: a.override,
-  });
-  void dir; void meta; void violations;
-  recomputeEquity(d);
-  toast(d, "ok", `${a.side.toUpperCase()} ${a.qty} ${a.symbol} filled @ ${px.toFixed(2)}.`);
+function toast(d: AppState, tone: Toast["tone"], text: string): void {
+  d.toasts = [...d.toasts.slice(-3), { id: nid("t"), tone, text }];
+}
+function log(d: AppState, kind: LogKind, text: string): void {
+  d.log = [{ id: nid("lg"), kind, text, tick: d.now, ts: Date.now() }, ...d.log].slice(0, 60);
+}
+function addViolation(d: AppState, rule: string, detail: string): void {
+  d.violations = [...d.violations, { id: nid("v"), rule, detail, at: d.now, ts: Date.now() }];
+}
+function recomputeEquity(d: AppState): void {
+  d.equity = d.cash + d.positions.reduce((a, p) => a + mtm(p, d.market[p.symbol].price), 0);
+  d.peakEquity = Math.max(d.peakEquity, d.equity);
 }
 
-function closePosition(d: AppState, id: string, reason: Trade["exitReason"]): void {
-  const i = d.positions.findIndex((p) => p.id === id);
-  if (i < 0) return;
-  const pos = d.positions[i];
-  const px = d.market[pos.symbol].price;
-  const gross = mtm(pos, px);
-  const pnl = gross;
-  const r = pos.riskAmount > 0 ? pnl / pos.riskAmount : 0;
+export function gateCheck(d: AppState): { ok: boolean; reason: string } {
+  if (!d.plan) return { ok: false, reason: "No trading plan on file." };
+  // Owner session: enforcement gates stand down so features can be tested
+  // freely (the plan itself is still required).
+  if (isAdminSession()) return { ok: true, reason: "" };
+  if (d.lock) return { ok: false, reason: "Daily loss limit breached - session locked." };
+  if (d.now < d.cooldownUntil) return { ok: false, reason: "Tilt cool-down active." };
+  if (d.journalDue.length > 0) return { ok: false, reason: "File the pending post-trade journal before your next order." };
+  return { ok: true, reason: "" };
+}
 
-  d.cash += px * pos.qty;
-  d.positions.splice(i, 1);
-
-  const trade: Trade = {
-    id: nid("tr"), symbol: pos.symbol, side: pos.side, qty: pos.qty,
-    entry: pos.avgEntry, exit: px, entryTs: pos.openedTs, exitTs: Date.now(),
-    pnl, r, riskAmount: pos.riskAmount, riskPct: pos.riskPct, setup: pos.setup,
-    exitReason: reason, checkin: pos.checkin, override: pos.override, violations: [],
-    journal: null,
-  };
-  d.trades.push(trade);
-  d.journalDue = [...d.journalDue, trade.id];
-
-  if (pnl < 0) {
-    d.lossesThisSession += 1;
-    // Tilt-ish guard: rapid re-entry sizing is logged by scoring; keep it light here.
+/* --------------------------- tilt wiring ---------------------------- */
+function runTiltCheck(d: AppState): void {
+  const signals = detectTiltSignals(d.trades, d.violations);
+  const fresh = signals.filter((s) => !d.tiltHandled.includes(s.key));
+  if (fresh.length === 0) return;
+  d.tiltHandled = [...d.tiltHandled, ...fresh.map((f) => f.key)].slice(-120);
+  const sev = fresh.reduce((a, s) => a + s.severity, 0);
+  for (const s of fresh) addViolation(d, "Tilt: " + TILT_META[s.type].label, s.detail);
+  if (sev >= 2) {
+    if (!logGate("tilt cooldown")) {
+      const ticks = Math.min(240, 60 + 25 * sev);
+      d.cooldownUntil = Math.max(d.cooldownUntil, d.now + ticks);
+    }
+    d.tiltReason = fresh.map((f) => TILT_META[f.type].label).join(" / ");
+    toast(d, "down", "Tilt Detector: " + fresh.length + " signal" + (fresh.length > 1 ? "s" : "") + (isAdminSession() ? " (owner: no pause applied)." : ". Trading paused - breathe first."));
+  } else {
+    d.tiltReason = TILT_META[fresh[0].type].label;
+    toast(d, "warn", "Tilt Detector noted: " + TILT_META[fresh[0].type].label + ". Logged to your record.");
   }
-  recomputeEquity(d);
-  toast(d, pnl >= 0 ? "ok" : "down", `${pos.symbol} closed ${pnl >= 0 ? "+" : "−"}$${Math.abs(pnl).toFixed(0)} (${r >= 0 ? "+" : ""}${r.toFixed(2)}R). Journal required.`);
 }
 
 /* ------------------------------ reducer ----------------------------- */
+const CSRF_SENSITIVE = new Set<Action["type"]>([
+  "PLACE_ORDER", "SUBMIT_JOURNAL", "CREATE_PLAN", "AMEND_PLAN",
+  "CLOSE_POSITION", "END_SESSION", "ADJUST_BRACKET",
+]);
+function csrfValid(action: Action): boolean {
+  if (!CSRF_SENSITIVE.has(action.type)) return true;
+  return isValidCsrfToken((action as Action & { _csrf?: string })._csrf);
+}
+
 function reducer(state: AppState, action: Action): AppState {
   const d: AppState = deepClone(state);
+  if (!csrfValid(action)) {
+    toast(d, "warn", "Security check failed (CSRF). The action was blocked.");
+    log(d, "system", "Blocked " + action.type + ": missing or invalid CSRF token.");
+    return d;
+  }
+
   switch (action.type) {
     case "TICK": return tick(d);
 
-    case "SIGN_IN": {
-      d.email = action.email.trim().toLowerCase();
-      safeSet(LS_EMAIL, d.email);
-      toast(d, "ok", `Signed in as ${d.email}.`);
-      return d;
-    }
-    case "SIGN_OUT": {
-      safeRemove(LS_EMAIL);
-      d.email = null;
-      return d;
-    }
-
     case "SELECT": { d.selected = action.symbol; return d; }
 
+    case "CREATE_PLAN": {
+      d.plan = action.plan;
+      d.name = sanitizeText(action.name, 60);
+      d.friction = action.friction;
+      d.legalAcceptedAt = action.legalAcceptedAt;
+      d.cash = action.plan.startingCapital;
+      d.equity = action.plan.startingCapital;
+      d.peakEquity = action.plan.startingCapital;
+      d.sessionStartEquity = action.plan.startingCapital;
+      d.seed = (Date.now() % 100000) + 7;
+      d.market = createMarket(d.seed);
+      d.missions = generateMissions("adherence", action.plan.setups);
+      d.tourOpen = true;
+      log(d, "system", "Plan v1 locked. The desk is open.");
+      toast(d, "ok", "Plan v1 locked - welcome to your desk.");
+      return d;
+    }
+
+    case "AMEND_PLAN": {
+      if (rateLimited("planWrite", 5, 60_000).limited) { toast(d, "warn", "Rate limit: too many plan changes."); return d; }
+      const reason = sanitizeText(action.reason, 300);
+      d.planHistory = [...d.planHistory, { version: d.plan!.version, at: Date.now(), reason }];
+      d.plan = {
+        ...action.plan,
+        note: sanitizeText(action.plan.note),
+        setups: action.plan.setups.map((s) => sanitizeText(s, 40)).filter((s) => s.length > 0),
+      };
+      log(d, "system", "Plan amended to v" + action.plan.version + ": " + reason);
+      toast(d, "ok", "Plan v" + action.plan.version + " locked. History archived.");
+      return d;
+    }
+
+    case "SET_FRICTION": { d.friction = action.mode; toast(d, "info", "Friction mode: " + action.mode + "."); return d; }
+    case "TOGGLE_STRESS": { d.stressMode = !d.stressMode; toast(d, "info", d.stressMode ? "Stress mode armed - expect adverse moves." : "Stress mode off."); return d; }
+
     case "PLACE_ORDER": { placeOrder(d, action); return d; }
+    case "CANCEL_ORDER": {
+      d.orders = d.orders.filter((o) => o.id !== action.id);
+      toast(d, "info", "Order cancelled.");
+      return d;
+    }
 
     case "CLOSE_POSITION": { closePosition(d, action.id, "manual"); return d; }
 
     case "ADJUST_BRACKET": {
       const p = d.positions.find((x) => x.id === action.id);
       if (!p) return d;
-      p.stop = action.stop; p.target = action.target;
-      toast(d, "info", `${p.symbol} bracket updated.`);
+      if (action.stop != null && p.stop != null) {
+        const worse = p.side === "long" ? action.stop < p.stop : action.stop > p.stop;
+        if (worse) {
+          p.stopMovedWorse = true;
+          addViolation(d, "Stop widened", p.symbol + " stop moved against the position after entry.");
+          toast(d, "warn", "Stop widened - logged as a violation.");
+        }
+      }
+      p.stop = action.stop;
+      p.target = action.target;
+      toast(d, "info", p.symbol + " bracket updated.");
       return d;
     }
 
     case "SUBMIT_JOURNAL": {
+      if (rateLimited("submitJournal", 10, 60_000).limited) { toast(d, "warn", "Rate limit: too many journal submissions. Slow down."); return d; }
       const t = d.trades.find((x) => x.id === action.tradeId);
       if (!t) return d;
       const fields = {
-        plan: action.journal.plan, whatHappened: action.journal.whatHappened,
-        rulesNote: action.journal.rulesNote, lesson: action.journal.lesson,
+        plan: sanitizeText(action.journal.plan), whatHappened: sanitizeText(action.journal.whatHappened),
+        rulesNote: sanitizeText(action.journal.rulesNote), lesson: sanitizeText(action.journal.lesson),
         followedRules: action.journal.followedRules,
       };
       const gate = journalGate(fields);
       if (!gate.ok) { toast(d, "warn", gate.reason); return d; }
       const qualityScore = journalQualityScore(fields);
-      if (qualityScore < 25) { toast(d, "warn", "Journal rejected by the quality engine — write a real reflection."); return d; }
-      t.journal = { ...action.journal, qualityScore, debrief: buildDebrief(t, d.plan), at: Date.now() };
+      if (qualityScore < 25) { toast(d, "warn", "Journal rejected by the quality engine - write a real reflection."); return d; }
+      const debrief = buildDebrief(t, d.plan, d.trades);
+      t.journal = { ...action.journal, ...fields, qualityScore, debrief, at: Date.now() };
       d.journalDue = d.journalDue.filter((id) => id !== action.tradeId);
-      toast(d, "ok", `Journal saved · quality ${qualityScore}/100. Coach debrief attached.`);
+      d.practiceScore += 2;
+      if (t.r < 0) {
+        d.reviews = [...d.reviews, { id: nid("rv"), tradeId: t.id, dueTick: d.now + 40, interval: 40, reps: 0 }];
+        d.missions.forEach((m) => {
+          if (m.code === "journal2" && !m.done && qualityScore >= 50 && fields.lesson.length >= 40) {
+            m.progress++;
+            if (m.progress >= m.target) { m.done = true; d.practiceScore += 25; toast(d, "ok", "Mission complete: " + m.title + " (+25 practice)"); }
+          }
+        });
+      }
+      log(d, "coach", "Journal filed for " + t.symbol + " (" + (t.r >= 0 ? "+" : "") + t.r.toFixed(2) + "R). Grade " + t.journal.grade + " - quality " + qualityScore + "/100.");
+      toast(d, "ok", "Journal saved - quality " + qualityScore + "/100. Coach debrief attached.");
       return d;
     }
 
     case "SKIP_JOURNAL": {
-      // Hard guard: only the owner's session may skip.
-      if (!isOwner(d.email)) return d;
+      // Hard guard re-checked here: dispatching this action any other way
+      // does nothing unless the signed-in account is the owner's.
+      if (!isAdminSession()) return d;
       const t = d.trades.find((x) => x.id === action.tradeId);
       if (!t) return d;
       d.journalDue = d.journalDue.filter((id) => id !== action.tradeId);
       t.journal = {
-        plan: "—", whatHappened: "—", emotionDuring: t.checkin.emotion, emotionAfter: t.checkin.emotion,
-        followedRules: "yes", rulesNote: "", lesson: "Skipped.", setup: t.setup,
-        grade: "D", qualityScore: 0, debrief: "", at: Date.now(),
+        plan: "-", whatHappened: "-",
+        emotionDuring: t.checkin.emotion, emotionAfter: t.checkin.emotion,
+        followedRules: "yes", rulesNote: "", lesson: "Skipped.",
+        setup: t.setup, grade: "D", qualityScore: 0, debrief: "", at: Date.now(),
       };
+      log(d, "system", "Journal skipped (owner session).");
       toast(d, "info", "Journal skipped (owner session).");
       return d;
     }
 
-    case "ACK_LOCK": { d.lock = null; toast(d, "info", "Review acknowledged. The desk is unlocked."); return d; }
+    case "ACK_LOCK": { d.lock = null; toast(d, "info", "Review acknowledged. End the session to reset the daily limit."); return d; }
 
-    case "TOGGLE_STRESS": { d.stressMode = !d.stressMode; toast(d, "info", d.stressMode ? "Stress mode armed — expect adverse moves." : "Stress mode off."); return d; }
+    case "END_SESSION": {
+      for (const p of d.positions.slice()) closePosition(d, p.id, "session");
+      d.orders = [];
+      d.session += 1;
+      d.sessionStartTick = d.now;
+      d.sessionStartEquity = d.equity;
+      d.lock = null; d.cooldownUntil = 0; d.tiltReason = null; d.lossStreak = 0;
+      d.missions = generateMissions("adherence", d.plan?.setups ?? []);
+      log(d, "system", "Session " + d.session + " opened. Daily limits reset. New missions generated.");
+      toast(d, "ok", "Session " + d.session + " open - limits reset, fresh missions on the Practice board.");
+      return d;
+    }
+
+    case "RESOLVE_REVIEW": {
+      const r = d.reviews.find((x) => x.id === action.id);
+      if (!r) return d;
+      if (action.again) {
+        r.interval = Math.max(20, Math.round(r.interval * 0.5));
+        r.dueTick = d.now + r.interval;
+        toast(d, "info", "Rescheduled sooner - it still has something to teach you.");
+      } else {
+        r.reps += 1;
+        r.interval = r.interval * 2;
+        r.dueTick = d.now + r.interval;
+        d.practiceScore += 4;
+        toast(d, "ok", "Pattern re-learned (+4 practice). Next review in " + r.interval + " ticks.");
+      }
+      return d;
+    }
 
     case "DISMISS_TOAST": { d.toasts = d.toasts.filter((t) => t.id !== action.id); return d; }
+
+    case "RESET_ALL": {
+      safeRemove(LS_KEY);
+      return { ...freshState(), hydrated: true };
+    }
+
+    case "OPEN_TOUR": { d.tourOpen = action.open; return d; }
+    case "TOUR_FINISHED": { d.tourOpen = false; d.tourDone = true; return d; }
+    case "SET_INDICATORS": { d.indicators = sanitizeIndicators(action.indicators); return d; }
+    case "ACK_TRADE_DISCLAIMER": { d.tradeDisclaimerShown = true; return d; }
   }
+}
+
+/* --------------------------- order engine --------------------------- */
+function placeOrder(d: AppState, a: Extract<Action, { type: "PLACE_ORDER" }>): void {
+  const plan = d.plan;
+  if (!plan) return;
+  if (rateLimited("placeOrder", 6, 60_000).limited) { toast(d, "warn", "Rate limit: max 6 orders per minute. Slow is smooth."); return; }
+  const gate = gateCheck(d);
+  if (!gate.ok) { toast(d, "warn", gate.reason); return; }
+  const m = d.market[a.symbol];
+  if (!m) return;
+
+  const openRisk = d.positions.reduce((s, p) => s + p.riskAmount, 0);
+  const refPx = a.orderType === "market" ? m.price : (a.trigger ?? m.price);
+  const riskPerShare = a.stop ? Math.abs(refPx - a.stop) : 0;
+  const riskAmount = riskPerShare * a.qty;
+
+  const violations: string[] = [];
+  if (a.override) { addViolation(d, "Risk rule broken", "Oversized order placed with explicit acknowledgment."); violations.push("oversize"); }
+  if (plan.forbidden.includes("no-stop") && !a.stop) { addViolation(d, "Forbidden: no-stop", "Order placed without a hard stop."); violations.push("no-stop"); toast(d, "down", "Blocked: your plan forbids trades without a stop."); return; }
+  if (d.positions.length >= plan.maxPositions) { toast(d, "warn", "Max positions (" + plan.maxPositions + ") reached."); return; }
+  if (riskAmount > 0 && openRisk + riskAmount > (plan.maxOpenRiskPct / 100) * d.equity) { toast(d, "warn", "Max open risk exceeded - close something first."); return; }
+
+  const checkin: Checkin = { ...a.checkin, thesis: sanitizeText(a.checkin.thesis, 400) };
+  const setup = sanitizeText(a.setup, 40);
+
+  if (a.orderType !== "market") {
+    d.orders = [...d.orders, {
+      id: nid("o"), symbol: a.symbol, type: a.orderType, side: a.side, qty: a.qty,
+      trigger: refPx, stop: a.stop, target: a.target, setup, checkin, override: a.override, createdAt: Date.now(),
+    }];
+    log(d, "fill", a.orderType.toUpperCase() + " order parked: " + a.side + " " + a.qty + " " + a.symbol + " @ " + refPx.toFixed(2));
+    toast(d, "info", a.orderType.toUpperCase() + " order resting @ " + refPx.toFixed(2) + ".");
+    return;
+  }
+
+  fillEntry(d, a.symbol, a.side, a.qty, m.price, a.stop, a.target, setup, checkin, a.override, violations);
+}
+
+function fillEntry(
+  d: AppState, symbol: string, side: Side, qty: number, px: number,
+  stop: number | null, target: number | null, setup: string, checkin: Checkin,
+  override: boolean, violations: string[],
+): void {
+  const meta = assetMeta(symbol);
+  let fillPx = px;
+  let fees = 0;
+  if (d.friction !== "easy") {
+    const slip = px * meta.vol * (d.friction === "brutal" ? 0.35 : 0.18);
+    fillPx = side === "long" ? px + slip : px - slip;
+  }
+  if (d.friction === "brutal") fees = meta.kind === "crypto" ? fillPx * qty * 0.0006 : Math.max(1, qty * 0.005);
+
+  const cost = fillPx * qty + fees;
+  if (cost > d.cash) { toast(d, "warn", "Not enough cash for that fill."); return; }
+  d.cash -= cost;
+
+  const riskAmount = stop ? Math.abs(fillPx - stop) * qty : 0;
+  d.positions = [...d.positions, {
+    id: nid("p"), symbol, side, qty, avgEntry: fillPx, stop, target,
+    openedTick: d.now, openedTs: Date.now(),
+    riskAmount, riskPct: d.equity > 0 ? (riskAmount / d.equity) * 100 : 0,
+    setup, checkin, override, fees, stressHits: 0, stopMovedWorse: false,
+    regime: d.market[symbol].regime,
+  }];
+  recomputeEquity(d);
+  log(d, "fill", "FILLED " + side.toUpperCase() + " " + qty + " " + symbol + " @ " + fillPx.toFixed(2) + (fees ? " (fees $" + fees.toFixed(2) + ")" : ""));
+  toast(d, "ok", side.toUpperCase() + " " + qty + " " + symbol + " filled @ " + fillPx.toFixed(2) + ".");
+}
+
+function closePosition(d: AppState, id: string, reason: Trade["exitReason"]): void {
+  const i = d.positions.findIndex((p) => p.id === id);
+  if (i < 0) return;
+  const pos = d.positions[i];
+  const m = d.market[pos.symbol];
+  let px = m.price;
+  if (d.friction !== "easy") px = pos.side === "long" ? px - px * assetMeta(pos.symbol).vol * 0.15 : px + px * assetMeta(pos.symbol).vol * 0.15;
+  let fees = 0;
+  if (d.friction === "brutal") {
+    const meta = assetMeta(pos.symbol);
+    fees = meta.kind === "crypto" ? px * pos.qty * 0.0006 : Math.max(1, pos.qty * 0.005);
+  }
+
+  const gross = mtm(pos, px);
+  const net = gross - fees;
+  const r = pos.riskAmount > 0 ? net / pos.riskAmount : 0;
+
+  d.cash += px * pos.qty;
+  d.positions = d.positions.filter((p) => p.id !== id);
+
+  const trade: Trade = {
+    id: nid("tr"), symbol: pos.symbol, side: pos.side, qty: pos.qty,
+    entry: pos.avgEntry, exit: px, entryTick: pos.openedTick, exitTick: d.now,
+    entryTs: pos.openedTs, exitTs: Date.now(),
+    pnl: net, fees: fees + pos.fees, r, riskAmount: pos.riskAmount, riskPct: pos.riskPct,
+    setup: pos.setup, exitReason: reason, checkin: pos.checkin, override: pos.override,
+    violations: pos.stopMovedWorse ? ["stop-widened"] : [],
+    friction: d.friction, regime: m.regime, stressHits: pos.stressHits,
+    journal: null,
+  };
+  d.trades = [...d.trades, trade];
+  d.journalDue = [...d.journalDue, trade.id];
+
+  if (net < 0) d.lossStreak += 1; else d.lossStreak = 0;
+  if (pos.stressHits > 0 && reason !== "stop") d.stressSurvived += 1;
+
+  d.missions.forEach((mi) => {
+    if (!mi.done && mi.code === "size3" && !pos.override && pos.riskPct > 0 && d.plan && Math.abs(pos.riskPct - d.plan.riskPerTradePct) < 0.35) {
+      mi.progress++;
+      if (mi.progress >= mi.target) { mi.done = true; d.practiceScore += 25; toast(d, "ok", "Mission complete: " + mi.title + " (+25 practice)"); }
+    }
+    if (!mi.done && mi.code === "setup3" && d.plan?.setups.includes(pos.setup)) {
+      mi.progress++;
+      if (mi.progress >= mi.target) { mi.done = true; d.practiceScore += 25; toast(d, "ok", "Mission complete: " + mi.title + " (+25 practice)"); }
+    }
+  });
+
+  log(d, "fill", "Closed " + pos.symbol + " @ " + px.toFixed(2) + " - " + (net >= 0 ? "+" : "") + "$" + net.toFixed(0) + " (" + (r >= 0 ? "+" : "") + r.toFixed(2) + "R) - " + reason);
+  toast(d, net >= 0 ? "ok" : "down", pos.symbol + " closed: " + (net >= 0 ? "+" : "") + "$" + net.toFixed(0) + " (" + (r >= 0 ? "+" : "") + r.toFixed(2) + "R). Journal required.");
+  recomputeEquity(d);
+  runTiltCheck(d);
 }
 
 /* ------------------------------- tick ------------------------------- */
@@ -283,15 +630,36 @@ function tick(d: AppState): AppState {
 
   for (const a of ASSETS) {
     const m = d.market[a.symbol];
-    // Stress injection against open positions.
+    const hadStress = !!m.stress;
+
+    // stress injection against open positions
     if (d.stressMode && !m.stress && d.positions.some((p) => p.symbol === a.symbol) && rnd() < 0.006) {
       const pos = d.positions.find((p) => p.symbol === a.symbol)!;
-      const dir: 1 | -1 = pos.side === "long" ? -1 : 1; // adverse
-      m.stress = { left: 6, dir };
+      m.stress = { left: 6, dir: pos.side === "long" ? -1 : 1 };
       d.stressSeen += 1;
-      toast(d, "warn", `STRESS EVENT — adverse move injected into ${a.symbol}. Hold your stop.`);
+      pos.stressHits += 1;
+      log(d, "event", "STRESS EVENT - adverse move injected into " + a.symbol + ".");
+      toast(d, "warn", "STRESS EVENT - adverse move against your " + a.symbol + " position. Hold the stop.");
     }
-    stepMarket(m, a, rnd);
+
+    stepTick(m, a, rnd);
+
+    if (hadStress && !m.stress) {
+      const pos = d.positions.find((p) => p.symbol === a.symbol);
+      if (pos) toast(d, "ok", a.symbol + " stress passed - position intact.");
+    }
+  }
+
+  // resting orders
+  for (const o of d.orders.slice()) {
+    const px = d.market[o.symbol].price;
+    const hit = o.type === "limit"
+      ? (o.side === "long" ? px <= o.trigger : px >= o.trigger)
+      : (o.side === "long" ? px >= o.trigger : px <= o.trigger);
+    if (hit) {
+      d.orders = d.orders.filter((x) => x.id !== o.id);
+      fillEntry(d, o.symbol, o.side, o.qty, px, o.stop, o.target, o.setup, o.checkin, o.override, []);
+    }
   }
 
   // bracket fills
@@ -302,19 +670,71 @@ function tick(d: AppState): AppState {
     else if (p.target != null && (p.target - px) * dir <= 0) closePosition(d, p.id, "target");
   }
 
+  // occasional news
+  if (d.now - d.lastNewsTick > 30 && rnd() < 0.03) {
+    d.lastNewsTick = d.now;
+    const a = ASSETS[Math.floor(rnd() * ASSETS.length)];
+    const impact: "up" | "down" = rnd() < 0.5 ? "up" : "down";
+    const m = d.market[a.symbol];
+    const jump = m.price * a.vol * (impact === "up" ? 1.6 : -1.6);
+    m.price = Math.max(a.base * 0.15, m.price + jump);
+    const last = m.candles[m.candles.length - 1];
+    last.c = m.price; last.h = Math.max(last.h, m.price); last.l = Math.min(last.l, m.price);
+    d.news = [{ id: nid("n"), symbol: a.symbol, headline: pickHeadline(a.symbol, impact, rnd), impact, tick: d.now, ts: Date.now() }, ...d.news].slice(0, 14);
+    log(d, "event", a.symbol + ": " + d.news[0].headline);
+    toast(d, impact === "up" ? "ok" : "warn", a.symbol + ": " + (impact === "up" ? "bullish" : "bearish") + " headline moving the tape.");
+  }
+
   recomputeEquity(d);
 
-  /* daily-loss circuit breaker — owner sessions never lock */
-  if (!d.lock && !isOwner(d.email)) {
+  /* daily-loss circuit breaker - owner sessions never lock */
+  if (d.plan && !d.lock) {
     const loss = d.sessionStartEquity - d.equity;
     const limit = (d.plan.maxDailyLossPct / 100) * d.sessionStartEquity;
     if (loss >= limit && d.sessionStartEquity > 0) {
-      d.lock = { reason: `Daily loss limit hit: −$${loss.toFixed(0)} (limit −$${limit.toFixed(0)}).`, loss };
-      addViolation(d, "Daily loss limit", `Breached the ${d.plan.maxDailyLossPct}% circuit breaker.`);
-      toast(d, "down", "CIRCUIT BREAKER — daily loss limit reached. Trading locked.");
+      d.breaches += 1;
+      addViolation(d, "Daily loss limit", "Breached the " + d.plan.maxDailyLossPct + "% circuit breaker.");
+      if (!logGate("daily-loss circuit breaker (lock?)")) {
+        d.lock = { reason: "Daily loss limit hit: -$" + loss.toFixed(0) + " (limit -$" + limit.toFixed(0) + ").", loss };
+        toast(d, "down", "CIRCUIT BREAKER - daily loss limit reached. Trading locked.");
+      } else {
+        toast(d, "warn", "Daily loss limit breached - recorded, but owner session stays unlocked.");
+      }
     }
   }
   return d;
+}
+
+function stepTick(m: MarketState, a: { symbol: string; base: number; vol: number }, rnd: () => number): void {
+  let dir = m.drift;
+  let volMul = 1;
+  if (m.stress) {
+    dir = m.stress.dir * a.vol * 0.55;
+    volMul = 2.4;
+    m.stress = m.stress.left <= 1 ? null : { ...m.stress, left: m.stress.left - 1 };
+  } else if (rnd() < 0.004) {
+    m.drift = (rnd() - 0.5) * a.vol * 0.16;
+    dir = m.drift;
+  }
+  const g = () => {
+    let u = 0, v = 0;
+    while (u === 0) u = rnd();
+    while (v === 0) v = rnd();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  const price = Math.max(a.base * 0.15, m.price + dir * m.price + g() * a.vol * m.price * 0.32 * volMul);
+  m.price = price;
+  const last = m.candles[m.candles.length - 1];
+  if (rnd() < 0.16) {
+    m.candles = [...m.candles.slice(-239), { o: price, h: price, l: price, c: price, v: Math.round(rnd() * 200) }];
+    m.regime = regimeOf(m.candles);
+  } else {
+    last.c = price;
+    last.h = Math.max(last.h, price);
+    last.l = Math.min(last.l, price);
+    last.v += Math.round(rnd() * 90);
+  }
+  void CANDLE_TICKS;
 }
 
 /* ------------------------------ context ----------------------------- */
@@ -322,10 +742,18 @@ interface Ctx { state: AppState; dispatch: Dispatch<Action> }
 const AppCtx = createContext<Ctx | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, loadState);
+  const [state, rawDispatch] = useReducer(reducer, undefined, loadState);
+
+  /* CSRF stamping: every sensitive action carries the session token. */
+  const dispatch = useCallback((action: Action) => {
+    if (CSRF_SENSITIVE.has(action.type)) {
+      (action as Action & { _csrf?: string })._csrf = issueCsrfToken();
+    }
+    rawDispatch(action);
+  }, []);
 
   useEffect(() => {
-    const iv = setInterval(() => dispatch({ type: "TICK" }), TICK_MS);
+    const iv = setInterval(() => rawDispatch({ type: "TICK" }), TICK_MS);
     return () => clearInterval(iv);
   }, []);
 
@@ -333,11 +761,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!state.hydrated) return;
     try {
       const { market: _m, toasts: _t, ...rest } = state;
-      safeSet(LS_KEY, JSON.stringify(rest));
+      writeTable(LS_KEY, rest);
     } catch { /* storage full */ }
   }, [state]);
 
-  const value = useMemo(() => ({ state, dispatch }), [state]);
+  const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
 }
 
@@ -347,4 +775,7 @@ export function useApp(): Ctx {
   return c;
 }
 
-export { emotionLabel };
+export function hardReset(): void {
+  safeRemove(LS_KEY);
+  window.location.reload();
+}
