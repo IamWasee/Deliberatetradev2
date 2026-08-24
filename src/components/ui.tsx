@@ -1,5 +1,6 @@
 /* UI kit - icons, primitives, toasts. */
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useApp } from "../lib/store";
 
 /* -------------------------------- icons ------------------------------ */
@@ -46,7 +47,9 @@ export function Modal({ open, onClose, title, children, wide }: {
     return () => window.removeEventListener("keydown", h);
   }, [open, onClose]);
   if (!open) return null;
-  return (
+  /* Portaled to <body>: no ancestor transform/overflow can re-contain the
+     fixed wrapper, so modals ALWAYS layer above the chart and page content. */
+  return createPortal(
     <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 animate-fade-in"
       style={{ background: "rgba(5,9,17,0.82)" }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className={`panel relative w-full ${wide ? "max-w-2xl" : "max-w-lg"} max-h-[92vh] overflow-y-auto animate-pop`} style={{ background: "#0e1729" }}>
@@ -56,7 +59,8 @@ export function Modal({ open, onClose, title, children, wide }: {
         </div>
         <div className="px-5 py-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -78,10 +82,12 @@ function ToastItem({ id, tone, text }: { id: string; tone: string; text: string 
 }
 export function Toasts() {
   const { state } = useApp();
-  return (
-    <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[95] flex flex-col gap-2 items-center pointer-events-none">
+  /* Portaled like the modals, so notifications clear the chart overlay too. */
+  return createPortal(
+    <div className="fixed top-14 left-1/2 z-[95] flex flex-col gap-2 items-center pointer-events-none" style={{ transform: "translateX(-50%)" }}>
       {state.toasts.slice(-3).map((t) => <ToastItem key={t.id} id={t.id} tone={t.tone} text={t.text} />)}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
