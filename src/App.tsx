@@ -2,6 +2,7 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AppProvider, hardReset, useApp, gateCheck } from "./lib/store";
 import { maskEmail } from "./lib/auth";
 import { useAuth, signOut } from "./lib/account";
+import { useSync } from "./lib/useSync";
 import { computeProcess } from "./lib/coaching";
 import type { View } from "./lib/types";
 import { Flash, Gauge, Ic, Modal, Toasts, Toggle, fmtSigned } from "./components/ui";
@@ -86,6 +87,8 @@ function Shell() {
   const [view, setView] = useState<View>("terminal");
 
   const authed = !!session;
+  /* Mirrors the desk to Postgres on durable events - see lib/sync.ts. */
+  useSync(profile?.id ?? null);
   /* Role comes from the profile row the database was willing to return, so it
      reflects server policy rather than anything the client asserted. It still
      only decides what is RENDERED - every admin read is re-checked by RLS. */

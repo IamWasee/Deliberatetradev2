@@ -201,7 +201,7 @@ export default function Auth() {
                 ["Email confirmation required before your first session.", "#39c5a5"],
                 ["Passwords are stored only as a bcrypt hash - never readable, not even by us.", "#e0a33b"],
                 ["Gmail addresses only while the platform is in early access.", "#6fb6e8"],
-                ["Your trades and journals stay in your browser on this device.", "#b48ef0"],
+                ["Your numbers sync to your account. What you write in journals stays private.", "#b48ef0"],
               ].map(([t, c], i) => (
                 <p key={i} className="flex items-start gap-2.5 text-[11.5px] text-fog-400 leading-snug">
                   <span className="mt-[5px] w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c as string }} />{t}
