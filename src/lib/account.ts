@@ -43,6 +43,12 @@ function humanise(message: string): string {
   if (m.includes("email not confirmed")) return "Confirm your email first - check your inbox for the link.";
   if (m.includes("rate limit") || m.includes("too many")) return "Too many attempts. Wait a few minutes and try again.";
   if (m.includes("weak password")) return "That password is too weak.";
+  /* Supabase reports a failed send as "Error sending confirmation email".
+     In practice this is almost always the shared sender's hourly quota
+     rather than a bad address, so say something the user can act on. */
+  if (m.includes("sending") && m.includes("email")) {
+    return "We couldn't send the confirmation email right now - our mail quota is temporarily used up. Try again in an hour, or contact support.";
+  }
   return message;
 }
 

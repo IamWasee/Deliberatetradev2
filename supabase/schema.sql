@@ -45,6 +45,12 @@ create index if not exists profiles_role_idx on public.profiles (role);
 create index if not exists profiles_tier_idx on public.profiles (tier);
 
 -- ---------------------------------------------------------------------------
+-- 2b. The owner address, in one place. Change it here and re-run this file.
+-- ---------------------------------------------------------------------------
+create or replace function public.owner_email()
+returns text language sql immutable as $$ select 'abdullahwasee86@gmail.com' $$;
+
+-- ---------------------------------------------------------------------------
 -- 3. Auto-create a profile whenever someone signs up
 --    SECURITY DEFINER so it can insert despite RLS; search_path is pinned to
 --    stop a hijacked search_path from redirecting the insert.
@@ -56,11 +62,18 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, email, display_name)
+  insert into public.profiles (id, email, display_name, role)
   values (
     new.id,
     new.email,
-    nullif(new.raw_user_meta_data ->> 'display_name', '')
+    nullif(new.raw_user_meta_data ->> 'display_name', ''),
+    /* Decided here rather than by a one-off UPDATE at the end of this file:
+       that UPDATE only touches rows that already exist, so an owner who
+       signs up AFTER the schema is applied would be created as a plain
+       user and never promoted. Assigning at insert time covers both
+       orders. */
+    case when lower(new.email) = lower(public.owner_email())
+         then 'admin'::user_role else 'user'::user_role end
   )
   on conflict (id) do nothing;
   return new;
@@ -152,9 +165,11 @@ from auth.users u
 where not exists (select 1 from public.profiles p where p.id = u.id);
 
 -- ---------------------------------------------------------------------------
--- 8. Grant the owner account admin
---    Takes effect once that address has signed up; harmless before then.
+-- 8. Promote the owner if they signed up BEFORE this file was last applied.
+--    The trigger above handles the other order, so between them the grant
+--    lands regardless of whether signup or schema came first.
 -- ---------------------------------------------------------------------------
 update public.profiles
 set role = 'admin'
-where lower(email) = 'abdullahwasee86@gmail.com';
+where lower(email) = lower(public.owner_email())
+  and role <> 'admin';

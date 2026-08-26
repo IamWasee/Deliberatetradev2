@@ -69,3 +69,115 @@ export function summarise(users: Profile[]): AdminStats {
   }
   return { total: users.length, byTier, newThisWeek, activeThisWeek };
 }
+
+/* =====================================================================
+   Phase 2 — performance metrics.
+
+   Every read below is admin-gated by RLS, not by anything in this file.
+   Note what is absent: there is no function to read `journals`. That table
+   carries no admin policy at all, so staff cannot read what users wrote,
+   and the privacy policy says exactly that. Do not add one without also
+   changing views/Legal.tsx and telling users first.
+   ===================================================================== */
+
+export interface UserStats {
+  user_id: string;
+  equity: number;
+  session_pnl: number;
+  realized_pnl: number;
+  open_risk: number;
+  trade_count: number;
+  win_rate: number;
+  avg_r: number;
+  process_score: number;
+  violation_count: number;
+  journal_count: number;
+  journals_due: number;
+  breaches: number;
+  updated_at: string;
+}
+
+export interface TradeRow {
+  id: string;
+  symbol: string;
+  side: "long" | "short";
+  qty: number;
+  entry: number;
+  exit: number;
+  pnl: number;
+  r: number;
+  risk_pct: number;
+  setup: string | null;
+  exit_reason: string | null;
+  emotion_before: string | null;
+  emotion_after: string | null;
+  followed_rules: boolean | null;
+  grade: string | null;
+  journal_quality: number | null;
+  override: boolean;
+  violations: string[];
+  closed_at: string;
+}
+
+export interface PositionRow {
+  id: string;
+  symbol: string;
+  side: "long" | "short";
+  qty: number;
+  avg_entry: number;
+  stop: number | null;
+  target: number | null;
+  risk_amount: number;
+  risk_pct: number;
+  setup: string | null;
+  opened_at: string;
+}
+
+export interface ViolationRow {
+  id: string;
+  rule: string;
+  detail: string | null;
+  created_at: string;
+}
+
+/** Stats for every user, keyed by id, for the admin list. */
+export async function listStats(): Promise<AdminResult<Record<string, UserStats>>> {
+  if (!hasSupabase()) return { data: null, error: "Server is not configured." };
+  const { data, error } = await supabase().from("user_stats").select("*");
+  if (error) return { data: null, error: error.message };
+  const map: Record<string, UserStats> = {};
+  for (const row of (data ?? []) as UserStats[]) map[row.user_id] = row;
+  return { data: map, error: "" };
+}
+
+export interface UserDetail {
+  stats: UserStats | null;
+  trades: TradeRow[];
+  positions: PositionRow[];
+  violations: ViolationRow[];
+}
+
+/** Everything the console shows for one user. Metrics only, by design. */
+export async function getUserDetail(userId: string): Promise<AdminResult<UserDetail>> {
+  if (!hasSupabase()) return { data: null, error: "Server is not configured." };
+  const db = supabase();
+  const [stats, trades, positions, violations] = await Promise.all([
+    db.from("user_stats").select("*").eq("user_id", userId).maybeSingle(),
+    db.from("trades").select("*").eq("user_id", userId).order("closed_at", { ascending: false }).limit(100),
+    db.from("positions").select("*").eq("user_id", userId),
+    db.from("violations").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(50),
+  ]);
+
+  const err = stats.error || trades.error || positions.error || violations.error;
+  if (err) return { data: null, error: err.message };
+
+  return {
+    data: {
+      stats: (stats.data as UserStats) ?? null,
+      trades: (trades.data ?? []) as TradeRow[],
+      positions: (positions.data ?? []) as PositionRow[],
+      violations: (violations.data ?? []) as ViolationRow[],
+    },
+    error: "",
+  };
+}

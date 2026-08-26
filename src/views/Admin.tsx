@@ -11,7 +11,8 @@
    sync ships. Journal text is intentionally never exposed.
    ===================================================================== */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { listUsers, setTier, summarise } from "../lib/adminApi";
+import { listUsers, setTier, summarise, listStats, type UserStats } from "../lib/adminApi";
+import AdminUser from "./AdminUser";
 import type { Profile, Tier } from "../lib/account";
 import { Empty, Ic } from "../components/ui";
 
@@ -41,18 +42,23 @@ export default function Admin() {
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [saving, setSaving] = useState<string | null>(null);
+  const [stats, setStats] = useState<Record<string, UserStats>>({});
+  const [open, setOpen] = useState<Profile | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await listUsers();
-    setUsers(data ?? []);
-    setError(error);
+    const [u, st] = await Promise.all([listUsers(), listStats()]);
+    setUsers(u.data ?? []);
+    setStats(st.data ?? {});
+    setError(u.error || st.error);
     setLoading(false);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
 
-  const stats = useMemo(() => summarise(users), [users]);
+  const agg = useMemo(() => summarise(users), [users]);
+  const totalTrades = useMemo(
+    () => Object.values(stats).reduce((a, s2) => a + s2.trade_count, 0), [stats]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -88,12 +94,13 @@ export default function Admin() {
           </button>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-6 animate-fade-up">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5 mb-6 animate-fade-up">
           {[
-            { k: "Accounts", v: stats.total },
-            { k: "New this week", v: stats.newThisWeek },
-            { k: "Active this week", v: stats.activeThisWeek },
-            { k: "Paying", v: stats.byTier.pro + stats.byTier.elite },
+            { k: "Accounts", v: agg.total },
+            { k: "New this week", v: agg.newThisWeek },
+            { k: "Active this week", v: agg.activeThisWeek },
+            { k: "Paying", v: agg.byTier.pro + agg.byTier.elite },
+            { k: "Trades logged", v: totalTrades },
           ].map((c) => (
             <div key={c.k} className="panel p-3.5">
               <p className="lbl mb-1">{c.k}</p>
@@ -126,18 +133,20 @@ export default function Admin() {
               <table className="w-full text-left" style={{ borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid #1c2942" }}>
-                    {["Account", "Tier", "Joined", "Last seen", "Change tier"].map((h) => (
+                    {["Account", "Tier", "Equity", "Trades", "Win", "Process", "Last seen", "Change tier"].map((h) => (
                       <th key={h} className="lbl px-3.5 py-2.5 whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {shown.map((u) => {
-                    const st = TIER_STYLE[u.tier];
+                    const ts = TIER_STYLE[u.tier];
+                    const st = stats[u.id];
                     return (
                       <tr key={u.id} style={{ borderBottom: "1px solid #141f33" }}>
                         <td className="px-3.5 py-3">
-                          <p className="text-[12.5px] text-fog-100 num">{u.email}</p>
+                          <button className="text-[12.5px] text-fog-100 num hover:text-teal transition-colors text-left"
+                            onClick={() => setOpen(u)}>{u.email}</button>
                           <p className="text-[11px] text-fog-500">
                             {u.display_name || "no name"}
                             {u.role === "admin" && <span className="text-teal"> · admin</span>}
@@ -145,12 +154,20 @@ export default function Admin() {
                         </td>
                         <td className="px-3.5 py-3">
                           <span className="lbl px-2 py-1 rounded-full whitespace-nowrap"
-                            style={{ fontSize: 9, color: st.fg, background: st.bg, border: "1px solid " + st.bd }}>
+                            style={{ fontSize: 9, color: ts.fg, background: ts.bg, border: "1px solid " + ts.bd }}>
                             {u.tier}
                           </span>
                         </td>
-                        <td className="px-3.5 py-3 text-[11.5px] text-fog-400 num whitespace-nowrap">{fmtDate(u.created_at)}</td>
-                        <td className="px-3.5 py-3 text-[11.5px] text-fog-400 num whitespace-nowrap">{relative(u.last_seen_at)}</td>
+                        <td className="px-3.5 py-3 text-[11.5px] text-fog-100 num whitespace-nowrap">
+                          {st ? "$" + st.equity.toLocaleString("en-US", { maximumFractionDigits: 0 }) : "-"}
+                        </td>
+                        <td className="px-3.5 py-3 text-[11.5px] text-fog-400 num">{st?.trade_count ?? "-"}</td>
+                        <td className="px-3.5 py-3 text-[11.5px] text-fog-400 num">{st ? (st.win_rate * 100).toFixed(0) + "%" : "-"}</td>
+                        <td className="px-3.5 py-3 text-[11.5px] num"
+                          style={{ color: !st ? "#6b7d96" : st.process_score >= 70 ? "#2fb98c" : st.process_score >= 45 ? "#e0a33b" : "#e0564f" }}>
+                          {st?.process_score ?? "-"}
+                        </td>
+                        <td className="px-3.5 py-3 text-[11.5px] text-fog-400 num whitespace-nowrap" title={fmtDate(u.created_at)}>{relative(u.last_seen_at)}</td>
                         <td className="px-3.5 py-3">
                           <div className="flex gap-1.5">
                             {TIERS.map((t) => (
@@ -174,11 +191,13 @@ export default function Admin() {
         </div>
 
         <p className="text-[11px] text-fog-500 mt-4 leading-relaxed">
-          Trading performance - equity, open trades, win rate, Process Score - is not shown here yet.
-          That data is still stored in each user's browser and reaches no server. Journal and
-          emotional check-in text is never exposed to administrators.
+          Click an email for that user's trades, open risk and violations. Journal and
+          emotional check-in text is never exposed to administrators - those rows grant staff
+          no read access at the database level, not merely in this screen.
         </p>
       </div>
+
+      {open && <AdminUser user={open} onClose={() => setOpen(null)} />}
     </div>
   );
 }
