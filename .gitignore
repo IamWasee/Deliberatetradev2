@@ -3,3 +3,8 @@ node_modules/
 dist/
 build/
 *.log
+
+# Local environment — never commit real keys
+.env
+.env.*
+!.env.example

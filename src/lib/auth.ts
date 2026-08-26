@@ -324,3 +324,52 @@ export function maskEmail(email: string): string {
   const tld = dot > 0 ? domain.slice(dot) : "";
   return `${local[0]}•••@${dName[0] ?? "•"}•••${tld}`;
 }
+
+/* ----------------------------- email ---------------------------------- */
+/* Signup is restricted to Google-hosted mailboxes. Widening this later is a
+   one-line change: add the domain here and nothing else needs touching.
+   Note that this narrows who can sign up; it is not an anti-abuse control on
+   its own, since anyone can create a fresh Gmail address. The real barrier is
+   the mandatory email confirmation, which an unreachable address cannot pass. */
+export const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "googlemail.com"] as const;
+
+/** Shape check first — a local part, one @, a domain with a dot, no spaces. */
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/* Google's own rules for the local part: 6-30 characters of letters, digits
+   and dots, never leading, trailing or doubled dots. Addresses that break
+   these cannot exist at Gmail, so they are rejected before the network call. */
+const GMAIL_LOCAL = /^[a-z0-9](?:[a-z0-9.]{4,28})[a-z0-9]$/;
+
+export interface EmailCheck { ok: boolean; reason: string }
+
+export function checkEmail(raw: string): EmailCheck {
+  const email = raw.trim().toLowerCase();
+  if (!email) return { ok: false, reason: "Enter your email address." };
+  if (!EMAIL_SHAPE.test(email)) return { ok: false, reason: "That is not a valid email address." };
+
+  const [local, domain] = email.split("@");
+  if (!(ALLOWED_EMAIL_DOMAINS as readonly string[]).includes(domain)) {
+    return { ok: false, reason: "Use a Gmail address - other providers are not accepted yet." };
+  }
+  /* Strip any +tag before validating; Gmail allows it and routes it to the
+     same inbox, so it must not fail the character rules below. */
+  const bare = local.split("+")[0];
+  if (bare.includes("..") || !GMAIL_LOCAL.test(bare)) {
+    return { ok: false, reason: "That is not a valid Gmail address." };
+  }
+  return { ok: true, reason: "" };
+}
+
+/** Gmail ignores dots and everything after a +, so first.last+shop@gmail.com
+    and firstlast@gmail.com are one inbox. Collapsing to a canonical form stops
+    one mailbox being used to register unlimited accounts. */
+export function canonicalEmail(raw: string): string {
+  const email = raw.trim().toLowerCase();
+  const at = email.lastIndexOf("@");
+  if (at <= 0) return email;
+  const domain = email.slice(at + 1);
+  if (!(ALLOWED_EMAIL_DOMAINS as readonly string[]).includes(domain)) return email;
+  const local = email.slice(0, at).split("+")[0].replace(/\./g, "");
+  return local + "@gmail.com";
+}

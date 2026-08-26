@@ -1,8 +1,8 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AppProvider, hardReset, useApp, gateCheck } from "./lib/store";
-import { isSessionValid, touchSession, clearSession, loadAccount, maskEmail } from "./lib/auth";
+import { maskEmail } from "./lib/auth";
+import { useAuth, signOut } from "./lib/account";
 import { computeProcess } from "./lib/coaching";
-import { isAdminSession } from "./lib/admin";
 import type { View } from "./lib/types";
 import { Flash, Gauge, Ic, Modal, Toasts, Toggle, fmtSigned } from "./components/ui";
 import { DisclaimerFooter } from "./components/LegalKit";
@@ -17,6 +17,7 @@ import Learn from "./views/Learn";
 import Readiness from "./views/Readiness";
 import PlanView from "./views/Plan";
 import Legal from "./views/Legal";
+import Admin from "./views/Admin";
 
 export default function App() {
   return (
@@ -64,6 +65,7 @@ function CrashScreen({ msg }: { msg: string }) {
 const T: Record<View, string> = {
   terminal: "Terminal", dashboard: "Process Debrief", journal: "Trade Journal",
   practice: "Practice", learn: "Playground", readiness: "Readiness", plan: "My Plan", legal: "Legal",
+  admin: "Admin",
 };
 
 const NAV: { id: View; label: string; icon: (p: { size?: number }) => ReactNode }[] = [
@@ -75,33 +77,32 @@ const NAV: { id: View; label: string; icon: (p: { size?: number }) => ReactNode 
   { id: "readiness", label: "Readiness", icon: Ic.target },
   { id: "plan", label: "My Plan", icon: Ic.scroll },
   { id: "legal", label: "Legal", icon: Ic.scale },
+  { id: "admin", label: "Admin", icon: Ic.shield },
 ];
 
 function Shell() {
   const { state: s, dispatch } = useApp();
-  const [authed, setAuthed] = useState(() => isSessionValid());
+  const { loading, session, profile } = useAuth();
   const [view, setView] = useState<View>("terminal");
 
-  /* session watchdog: keep-alive on activity, auto-logout on idle expiry */
-  useEffect(() => {
-    if (!authed) return;
-    touchSession();
-    const activity = () => touchSession();
-    const events: (keyof WindowEventMap)[] = ["mousemove", "keydown", "pointerdown", "scroll"];
-    events.forEach((e) => window.addEventListener(e, activity, { passive: true }));
-    const iv = setInterval(() => {
-      if (isSessionValid()) touchSession();
-      else { clearSession(); setAuthed(false); }
-    }, 15_000);
-    return () => {
-      events.forEach((e) => window.removeEventListener(e, activity));
-      clearInterval(iv);
-    };
-  }, [authed]);
+  const authed = !!session;
+  /* Role comes from the profile row the database was willing to return, so it
+     reflects server policy rather than anything the client asserted. It still
+     only decides what is RENDERED - every admin read is re-checked by RLS. */
+  const owner = profile?.role === "admin";
 
   useEffect(() => { document.title = T[view] + " - DeliberateTrade"; }, [view]);
 
-  const acct = useMemo(() => loadAccount(), [authed]);
+  /* Never leave a non-admin parked on the admin route (e.g. after a downgrade). */
+  useEffect(() => { if (view === "admin" && !owner) setView("terminal"); }, [view, owner]);
+
+  if (loading) {
+    return (
+      <div className="h-full flex items-center justify-center bg-ambient">
+        <p className="lbl">Loading…</p>
+      </div>
+    );
+  }
 
   if (!authed) {
     return (
@@ -117,7 +118,6 @@ function Shell() {
   const proc = computeProcess(s.trades, s.violations, s.plan);
   const gate = gateCheck(s);
   const dayPnl = s.equity - s.sessionStartEquity;
-  const owner = isAdminSession();
 
   return (
     <div className="h-full flex flex-col bg-ambient relative">
@@ -174,9 +174,9 @@ function Shell() {
           <button className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 11 }} onClick={() => dispatch({ type: "END_SESSION" })}>
             End session
           </button>
-          <button className="text-[10.5px] text-fog-500 hover:text-fog-300 transition-colors num" title={acct?.email ?? ""}
-            onClick={() => { clearSession(); setAuthed(false); }}>
-            {acct ? maskEmail(acct.email) : "account"} - sign out
+          <button className="text-[10.5px] text-fog-500 hover:text-fog-300 transition-colors num" title={profile?.email ?? ""}
+            onClick={() => { void signOut(); }}>
+            {profile ? maskEmail(profile.email) : "account"} - sign out
           </button>
         </div>
       </div>
@@ -185,7 +185,7 @@ function Shell() {
       <div className="relative flex-1 flex min-h-0">
         <nav className="shrink-0 border-r flex flex-col gap-1 p-2 w-[64px] md:w-[150px] overflow-y-auto"
           style={{ background: "rgba(7,12,22,0.6)", borderColor: "#16213a" }} data-tour="nav">
-          {NAV.map((n) => {
+          {NAV.filter((n) => n.id !== "admin" || owner).map((n) => {
             const active = view === n.id;
             const badge = n.id === "journal" ? s.journalDue.length : 0;
             return (
@@ -219,20 +219,21 @@ function Shell() {
           {view === "readiness" && <Readiness />}
           {view === "plan" && <PlanView />}
           {view === "legal" && <Legal />}
+          {view === "admin" && <Admin />}
         </main>
       </div>
 
       <DisclaimerFooter onLegal={() => setView("legal")} />
       <JournalModal />
-      <LockReview />
+      <LockReview owner={owner} />
       <Toasts />
     </div>
   );
 }
 
-function LockReview() {
+function LockReview({ owner }: { owner: boolean }) {
   const { state: s, dispatch } = useApp();
-  if (!s.lock || isAdminSession()) return null;
+  if (!s.lock || owner) return null;
   const dayPnl = s.equity - s.sessionStartEquity;
   return (
     <Modal open onClose={() => undefined}

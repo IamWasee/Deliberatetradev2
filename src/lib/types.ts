@@ -1,6 +1,6 @@
 /* Domain model — the single source of truth for every shape in the app. */
 
-export type View = "dashboard" | "terminal" | "journal" | "practice" | "learn" | "readiness" | "plan" | "legal";
+export type View = "dashboard" | "terminal" | "journal" | "practice" | "learn" | "readiness" | "plan" | "legal" | "admin";
 export type Side = "long" | "short";
 export type OrderType = "market" | "limit" | "stop";
 export type FrictionMode = "easy" | "realistic" | "brutal";
