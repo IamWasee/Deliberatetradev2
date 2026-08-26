@@ -16,7 +16,7 @@ import {
   type PlanVersion, type Position, type Review, type Side, type Toast, type Trade,
   type Violation,
 } from "./types";
-import { CANDLE_TICKS, createMarket, mulberry32, pickHeadline, regimeOf } from "./market";
+import { createMarket, mulberry32, pickHeadline, stepMarket } from "./market";
 import { buildDebrief, detectTiltSignals, generateMissions, TILT_META } from "./coaching";
 import { deepClone, nid, num, str, arr, obj, bool, safeGet, safeRemove } from "./safe";
 import { writeTable } from "./db";
@@ -679,7 +679,7 @@ function tick(d: AppState): AppState {
       toast(d, "warn", "STRESS EVENT - adverse move against your " + a.symbol + " position. Hold the stop.");
     }
 
-    stepTick(m, a, rnd);
+    stepMarket(m, a, rnd);
 
     if (hadStress && !m.stress) {
       const pos = d.positions.find((p) => p.symbol === a.symbol);
@@ -740,38 +740,6 @@ function tick(d: AppState): AppState {
     }
   }
   return d;
-}
-
-function stepTick(m: MarketState, a: { symbol: string; base: number; vol: number }, rnd: () => number): void {
-  let dir = m.drift;
-  let volMul = 1;
-  if (m.stress) {
-    dir = m.stress.dir * a.vol * 0.55;
-    volMul = 2.4;
-    m.stress = m.stress.left <= 1 ? null : { ...m.stress, left: m.stress.left - 1 };
-  } else if (rnd() < 0.004) {
-    m.drift = (rnd() - 0.5) * a.vol * 0.16;
-    dir = m.drift;
-  }
-  const g = () => {
-    let u = 0, v = 0;
-    while (u === 0) u = rnd();
-    while (v === 0) v = rnd();
-    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-  };
-  const price = Math.max(a.base * 0.15, m.price + dir * m.price + g() * a.vol * m.price * 0.32 * volMul);
-  m.price = price;
-  const last = m.candles[m.candles.length - 1];
-  if (rnd() < 0.16) {
-    m.candles = [...m.candles.slice(-239), { o: price, h: price, l: price, c: price, v: Math.round(rnd() * 200) }];
-    m.regime = regimeOf(m.candles);
-  } else {
-    last.c = price;
-    last.h = Math.max(last.h, price);
-    last.l = Math.min(last.l, price);
-    last.v += Math.round(rnd() * 90);
-  }
-  void CANDLE_TICKS;
 }
 
 /* ------------------------------ context ----------------------------- */

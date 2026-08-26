@@ -22,9 +22,32 @@ export const emotionLabel = (t: EmotionTag): string => EMOTIONS.find((e) => e.id
 export interface Checkin { emotion: EmotionTag; arousal: number; thesis: string; at: number }
 
 export interface Candle { o: number; h: number; l: number; c: number; v: number }
+/* Simulator state behind each instrument. Rebuilt from the session seed on
+   every load, so its shape can change without migrating saved sessions. */
+export interface SimState {
+  /** Ticks remaining before the regime is re-rolled. */
+  regimeLeft: number;
+  /** Per-tick expected return, set by the current regime. */
+  drift: number;
+  /** Conditional volatility - the GARCH state that produces calm and
+      violent stretches instead of uniform noise. */
+  sigma: number;
+  /** Previous innovation, the other half of the GARCH recursion. */
+  lastShock: number;
+  /** Long-run volatility this instrument reverts toward. */
+  baseSigma: number;
+  /** Price a ranging market is pulled back toward. */
+  anchor: number;
+  /** Ticks elapsed in the bar currently forming. */
+  barTick: number;
+  /** Direction of the active intrabar push, which is what carves wicks. */
+  pressure: number;
+}
+
 export interface MarketState {
   candles: Candle[]; price: number; refClose: number;
   regime: Regime; stress: { left: number; dir: 1 | -1 } | null; drift: number;
+  sim: SimState;
 }
 
 export interface AssetMeta { symbol: string; name: string; kind: "equity" | "crypto"; base: number; vol: number; decimals: number }
