@@ -20,7 +20,7 @@ const fmtCountdown = (ms: number) => Math.floor(ms / 60000) + ":" + String(Math.
 export default function Auth() {
   const [mode, setMode] = useState<Mode>(() => (loadAccount() ? "signin" : "signup"));
   const [name, setName] = useState("");
-  const [email, setEmail] = useState(() => loadAccount()?.email ?? "abdullahwasee86@gmail.com");
+  const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [code, setCode] = useState("");
