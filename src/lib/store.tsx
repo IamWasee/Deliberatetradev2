@@ -431,7 +431,9 @@ function reducer(state: AppState, action: Action): AppState {
     case "ADJUST_BRACKET": {
       const p = d.positions.find((x) => x.id === action.id);
       if (!p) return d;
-      if (action.stop != null && p.stop != null) {
+      const stopAcceptable = action.stop == null ||
+        (p.side === "long" ? action.stop < d.market[p.symbol].price : action.stop > d.market[p.symbol].price);
+      if (action.stop != null && p.stop != null && stopAcceptable) {
         const worse = p.side === "long" ? action.stop < p.stop : action.stop > p.stop;
         if (worse) {
           p.stopMovedWorse = true;
@@ -439,9 +441,28 @@ function reducer(state: AppState, action: Action): AppState {
           toast(d, "warn", "Stop widened - logged as a violation.");
         }
       }
-      p.stop = action.stop;
-      p.target = action.target;
-      toast(d, "info", p.symbol + " bracket updated.");
+      /* A bracket level on the wrong side of price is not a level, it is
+         an instruction to close immediately. The bracket sweep runs on the
+         next tick and fires the moment target <= price for a long, so a
+         target dragged below the market closed the position at once and
+         labelled the loss "TARGET" - which reads as an engine fault rather
+         than a mis-drag, and teaches the trader nothing.
+
+         Each leg is validated independently so a bad drag on one does not
+         discard a good adjustment to the other. */
+      const px = d.market[p.symbol].price;
+      const longSide = p.side === "long";
+
+      if (action.stop != null) {
+        if (longSide ? action.stop < px : action.stop > px) p.stop = action.stop;
+        else toast(d, "warn", "Stop must sit " + (longSide ? "below" : "above") + " the market - change ignored.");
+      } else p.stop = null;
+
+      if (action.target != null) {
+        if (longSide ? action.target > px : action.target < px) p.target = action.target;
+        else toast(d, "warn", "Target must sit " + (longSide ? "above" : "below") + " the market - change ignored.");
+      } else p.target = null;
+
       return d;
     }
 
