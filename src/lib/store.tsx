@@ -578,6 +578,23 @@ function placeOrder(d: AppState, a: Extract<Action, { type: "PLACE_ORDER" }>): v
   const violations: string[] = [];
   if (a.override) { addViolation(d, "Risk rule broken", "Oversized order placed with explicit acknowledgment."); violations.push("oversize"); }
   if (plan.forbidden.includes("no-stop") && !a.stop) { addViolation(d, "Forbidden: no-stop", "Order placed without a hard stop."); violations.push("no-stop"); toast(d, "down", "Blocked: your plan forbids trades without a stop."); return; }
+
+  /* Reject a bracket on the wrong side of the market before it is armed.
+     ADJUST_BRACKET already refuses these, but an order could still be
+     PLACED with them, and the bracket sweep would close the position on
+     the next tick - a stop below the market on a short is not a stop, it
+     is an immediate exit. Defence in depth: the ticket now recomputes the
+     levels when the side changes, and this refuses them if it ever does
+     not. */
+  const isLong = a.side === "long";
+  if (a.stop != null && (isLong ? a.stop >= refPx : a.stop <= refPx)) {
+    toast(d, "down", "Stop must sit " + (isLong ? "below" : "above") + " the market for a " + a.side + ". Order rejected.");
+    return;
+  }
+  if (a.target != null && (isLong ? a.target <= refPx : a.target >= refPx)) {
+    toast(d, "down", "Target must sit " + (isLong ? "above" : "below") + " the market for a " + a.side + ". Order rejected.");
+    return;
+  }
   if (d.positions.length >= plan.maxPositions) { toast(d, "warn", "Max positions (" + plan.maxPositions + ") reached."); return; }
   if (riskAmount > 0 && openRisk + riskAmount > (plan.maxOpenRiskPct / 100) * d.equity) { toast(d, "warn", "Max open risk exceeded - close something first."); return; }
 

@@ -234,8 +234,15 @@ function EntryTicket({ gateOk, gateReason, onTradeIntent }: { gateOk: boolean; g
     setOverride(false);
     const rps = 1.5 * a;
     setQty(Math.max(1, Math.floor(plannedRisk$ / Math.max(0.0001, rps))));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.selected]);
+    /* `side` MUST stay in this list. The bracket is derived from it - stop
+       below and target above for a long, inverted for a short - so leaving
+       it out meant flipping LONG to SHORT kept the long's levels. The stop
+       then sat BELOW the market on a short, and the bracket sweep fires
+       the instant price >= stop for a short, so the position was closed on
+       the very next tick. Longs looked fine because the defaults are
+       computed for a long.
+       eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [s.selected, side]);
 
   useEffect(() => {
     const handler = () => setCheckinOpen(true);
