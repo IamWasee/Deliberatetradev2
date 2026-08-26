@@ -274,8 +274,15 @@ function loadState(): AppState {
 }
 
 /* ----------------------------- helpers ------------------------------ */
+/** Open profit or loss on a position. */
 export const mtm = (p: Position, px: number) =>
   (p.side === "long" ? px - p.avgEntry : p.avgEntry - px) * p.qty;
+
+/** What the position contributes to account value: a long holds an asset
+    worth px*qty, a short owes one. Distinct from mtm, which is P&L - the
+    two were previously conflated, see recomputeEquity. */
+export const exposure = (p: Position, px: number) =>
+  (p.side === "long" ? 1 : -1) * px * p.qty;
 
 /* ------------------------- friction model ---------------------------
    Commission and slippage are the same shape wherever they are charged,
@@ -324,8 +331,19 @@ function log(d: AppState, kind: LogKind, text: string): void {
 function addViolation(d: AppState, rule: string, detail: string): void {
   d.violations = [...d.violations, { id: nid("v"), rule, detail, at: d.now, ts: Date.now() }];
 }
+/* Account value is cash plus what the open positions are WORTH, not cash
+   plus their P&L. Conflating the two had two consequences:
+
+     · Opening a long dropped equity by the full notional, because the cash
+       left but the asset it bought was never counted back.
+     · Shorts were inverted end to end. Opening one DEBITED cash as though
+       buying, and closing one CREDITED it as though selling, so the net
+       cash movement was (exit - entry) * qty when a short earns
+       (entry - exit) * qty. A winning short reduced the account and a
+       losing short grew it, while the trade record stored the correct
+       P&L - which is why the balance disagreed with Recent Closed. */
 function recomputeEquity(d: AppState): void {
-  d.equity = d.cash + d.positions.reduce((a, p) => a + mtm(p, d.market[p.symbol].price), 0);
+  d.equity = d.cash + d.positions.reduce((a, p) => a + exposure(p, d.market[p.symbol].price), 0);
   d.peakEquity = Math.max(d.peakEquity, d.equity);
 }
 
@@ -628,9 +646,12 @@ function fillEntry(
   }
   if (d.friction === "brutal") fees = meta.kind === "crypto" ? fillPx * qty * 0.0006 : Math.max(1, qty * 0.005);
 
-  const cost = fillPx * qty + fees;
-  if (cost > d.cash) { toast(d, "warn", "Not enough cash for that fill."); return; }
-  d.cash -= cost;
+  /* A long pays out cash and receives an asset; a short receives proceeds
+     and owes the asset back. Both are capped at account value, so neither
+     side can take on more notional than the account can cover. */
+  const notional = fillPx * qty;
+  if (notional + fees > d.equity) { toast(d, "warn", "Not enough account value for that fill."); return; }
+  d.cash += (side === "long" ? -notional : notional) - fees;
 
   const riskAmount = trueRiskAmount(symbol, fillPx, stop, qty, d.friction);
   d.positions = [...d.positions, {
@@ -662,7 +683,10 @@ function closePosition(d: AppState, id: string, reason: Trade["exitReason"]): vo
   const net = gross - fees - pos.fees;
   const r = pos.riskAmount > 0 ? net / pos.riskAmount : 0;
 
-  d.cash += px * pos.qty;
+  /* Unwind the entry: a long sells its asset back, a short buys its back.
+     The exit commission leaves cash here too - previously it was reported
+     in the trade record but never actually charged to the account. */
+  d.cash += (pos.side === "long" ? px * pos.qty : -px * pos.qty) - fees;
   d.positions = d.positions.filter((p) => p.id !== id);
 
   const trade: Trade = {
