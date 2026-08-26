@@ -133,6 +133,7 @@ export default function Terminal() {
               entry={pos ? pos.avgEntry : undefined}
               stop={pos?.stop ?? undefined}
               target={pos?.target ?? undefined}
+              onOpenIndicators={() => setIndOpen(true)}
               onPriceChange={(kind, price) => {
                 if (!pos) return;
                 dispatch({
