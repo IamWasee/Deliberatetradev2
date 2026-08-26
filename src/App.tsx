@@ -131,6 +131,20 @@ function Shell() {
           <span className="font-display font-bold text-[15px] text-fog-100 hidden sm:inline">DeliberateTrade</span>
         </div>
 
+        <div className="flex items-center gap-3 md:gap-4" data-tour="equity">
+          <div className="flex flex-col leading-none">
+            <span className="lbl hidden sm:block mb-1">Equity</span>
+            <Flash value={s.equity} format={(n) => "$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+              className="text-[15px] font-semibold text-fog-100" />
+          </div>
+          <div className="flex flex-col leading-none">
+            <span className="lbl hidden sm:block mb-1">Session</span>
+            <span className={"num text-[15px] font-semibold " + (dayPnl >= 0 ? "text-up" : "text-down")}>
+              {fmtSigned(dayPnl, 0)}
+            </span>
+          </div>
+        </div>
+
         <div className="hidden lg:flex items-center gap-2" style={{ width: 130 }} data-tour="riskmeter">
           <span className="lbl">Risk</span>
           <div className="flex-1 h-[6px] rounded-full overflow-hidden" style={{ background: "#16213a" }}>
