@@ -277,6 +277,44 @@ function loadState(): AppState {
 export const mtm = (p: Position, px: number) =>
   (p.side === "long" ? px - p.avgEntry : p.avgEntry - px) * p.qty;
 
+/* ------------------------- friction model ---------------------------
+   Commission and slippage are the same shape wherever they are charged,
+   so they live here rather than being re-derived at each call site.
+   Keep these in step with the deductions in placeFill/closePosition. */
+export function commissionFor(symbol: string, px: number, qty: number, friction: FrictionMode): number {
+  if (friction !== "brutal") return 0;
+  const meta = assetMeta(symbol);
+  return meta.kind === "crypto" ? px * qty * 0.0006 : Math.max(1, qty * 0.005);
+}
+
+export function slipPerShare(symbol: string, px: number, friction: FrictionMode): number {
+  return friction === "easy" ? 0 : px * assetMeta(symbol).vol * 0.15;
+}
+
+/* What a stop-out actually costs: the stop distance PLUS the friction the
+   exit will incur.
+
+   R is meant to answer "how many units of intended risk did this trade
+   cost me", and a stop-out should therefore land near -1R. Measuring only
+   the stop distance broke that badly for small positions, because two of
+   the three costs do not scale with size: the commission has a $1 floor
+   per side, and slippage is charged per share regardless of how tight the
+   stop is. A 1-share trade with a 3c stop paid ~$2 in fees and ~$0.47 of
+   slippage against $0.03 of nominal risk, and reported -50R.
+
+   Folding the round trip in makes R mean the same thing at every size,
+   and keeps avg R, the Process Score and the admin console honest. */
+export function trueRiskAmount(
+  symbol: string, entryPx: number, stop: number | null, qty: number, friction: FrictionMode,
+): number {
+  if (!stop || qty <= 0) return 0;
+  const nominal = Math.abs(entryPx - stop) * qty;
+  const roundTripFees =
+    commissionFor(symbol, entryPx, qty, friction) + commissionFor(symbol, stop, qty, friction);
+  const exitSlip = slipPerShare(symbol, stop, friction) * qty;
+  return nominal + roundTripFees + exitSlip;
+}
+
 function toast(d: AppState, tone: Toast["tone"], text: string): void {
   d.toasts = [...d.toasts.slice(-3), { id: nid("t"), tone, text }];
 }
@@ -514,8 +552,7 @@ function placeOrder(d: AppState, a: Extract<Action, { type: "PLACE_ORDER" }>): v
 
   const openRisk = d.positions.reduce((s, p) => s + p.riskAmount, 0);
   const refPx = a.orderType === "market" ? m.price : (a.trigger ?? m.price);
-  const riskPerShare = a.stop ? Math.abs(refPx - a.stop) : 0;
-  const riskAmount = riskPerShare * a.qty;
+  const riskAmount = trueRiskAmount(a.symbol, refPx, a.stop, a.qty, d.friction);
 
   const violations: string[] = [];
   if (a.override) { addViolation(d, "Risk rule broken", "Oversized order placed with explicit acknowledgment."); violations.push("oversize"); }
@@ -557,7 +594,7 @@ function fillEntry(
   if (cost > d.cash) { toast(d, "warn", "Not enough cash for that fill."); return; }
   d.cash -= cost;
 
-  const riskAmount = stop ? Math.abs(fillPx - stop) * qty : 0;
+  const riskAmount = trueRiskAmount(symbol, fillPx, stop, qty, d.friction);
   d.positions = [...d.positions, {
     id: nid("p"), symbol, side, qty, avgEntry: fillPx, stop, target,
     openedTick: d.now, openedTs: Date.now(),
@@ -577,14 +614,14 @@ function closePosition(d: AppState, id: string, reason: Trade["exitReason"]): vo
   const m = d.market[pos.symbol];
   let px = m.price;
   if (d.friction !== "easy") px = pos.side === "long" ? px - px * assetMeta(pos.symbol).vol * 0.15 : px + px * assetMeta(pos.symbol).vol * 0.15;
-  let fees = 0;
-  if (d.friction === "brutal") {
-    const meta = assetMeta(pos.symbol);
-    fees = meta.kind === "crypto" ? px * pos.qty * 0.0006 : Math.max(1, pos.qty * 0.005);
-  }
+  const fees = commissionFor(pos.symbol, px, pos.qty, d.friction);
 
   const gross = mtm(pos, px);
-  const net = gross - fees;
+  /* Both sides of the round trip. The entry commission left cash when the
+     position opened, so equity already reflects it - but `pnl` is a pure
+     reporting field, and omitting it understated every trade's true cost
+     and flattered R by the same amount. */
+  const net = gross - fees - pos.fees;
   const r = pos.riskAmount > 0 ? net / pos.riskAmount : 0;
 
   d.cash += px * pos.qty;
