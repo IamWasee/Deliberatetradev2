@@ -119,10 +119,30 @@ export async function updatePassword(password: string): Promise<Result> {
 }
 
 /* ----------------------------- profile ------------------------------- */
-export async function fetchProfile(): Promise<Profile | null> {
+/* Always filtered by id, never left to RLS to narrow.
+
+   An earlier version selected without a filter and trusted the policy to
+   return exactly one row. That holds for a normal user, but an admin can
+   read every profile - so the moment a second account existed, .single()
+   received multiple rows, errored, and returned null. The signed-in admin
+   silently lost their role and their admin UI.
+
+   The lesson generalises: RLS decides what you MAY see, not what you asked
+   for. Queries must still say which row they want. */
+export async function fetchProfile(userId?: string): Promise<Profile | null> {
   if (!hasSupabase()) return null;
-  const { data, error } = await supabase().from("profiles").select("*").single();
-  return error ? null : (data as Profile);
+  const db = supabase();
+
+  let id = userId;
+  if (!id) {
+    const { data: auth } = await db.auth.getUser();
+    id = auth.user?.id;
+  }
+  if (!id) return null;
+
+  const { data, error } = await db
+    .from("profiles").select("*").eq("id", id).maybeSingle();
+  return error ? null : ((data as Profile) ?? null);
 }
 
 /** Fire-and-forget activity stamp; failure is never worth blocking a login. */
@@ -155,7 +175,7 @@ export function useAuth(): AuthState & { refresh: () => void } {
         setState({ loading: false, session: null, profile: null });
         return;
       }
-      const profile = await fetchProfile();
+      const profile = await fetchProfile(session.user.id);
       if (!live) return;
       setCachedRole(profile?.role ?? null);
       setState({ loading: false, session, profile });
