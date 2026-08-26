@@ -62,7 +62,7 @@ export default function JournalModal() {
           onClick={() => dispatch({ type: "SKIP_JOURNAL", tradeId: trade.id })}
           aria-label="Skip"
           title="Skip"
-          className="absolute top-3 right-12 inline-flex items-center justify-center w-7 h-7 rounded-lg text-fog-500 transition-all hover:text-fog-100"
+          className="absolute top-3 right-12 z-20 inline-flex items-center justify-center w-7 h-7 rounded-lg text-fog-500 transition-all hover:text-fog-100"
           style={{ background: "#111b30", border: "1px solid #2a3c5e" }}>
           <Ic.x size={14} />
         </button>

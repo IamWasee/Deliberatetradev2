@@ -16,7 +16,7 @@ import {
   type PlanVersion, type Position, type Review, type Side, type Toast, type Trade,
   type Violation,
 } from "./types";
-import { CANDLE_TICKS, createMarket, mulberry32, pickHeadline, regimeOf } from "./market";
+import { createMarket, mulberry32, pickHeadline, stepMarket } from "./market";
 import { buildDebrief, detectTiltSignals, generateMissions, TILT_META } from "./coaching";
 import { deepClone, nid, num, str, arr, obj, bool, safeGet, safeRemove } from "./safe";
 import { writeTable } from "./db";
@@ -274,8 +274,15 @@ function loadState(): AppState {
 }
 
 /* ----------------------------- helpers ------------------------------ */
+/** Open profit or loss on a position. */
 export const mtm = (p: Position, px: number) =>
   (p.side === "long" ? px - p.avgEntry : p.avgEntry - px) * p.qty;
+
+/** What the position contributes to account value: a long holds an asset
+    worth px*qty, a short owes one. Distinct from mtm, which is P&L - the
+    two were previously conflated, see recomputeEquity. */
+export const exposure = (p: Position, px: number) =>
+  (p.side === "long" ? 1 : -1) * px * p.qty;
 
 /* ------------------------- friction model ---------------------------
    Commission and slippage are the same shape wherever they are charged,
@@ -324,8 +331,19 @@ function log(d: AppState, kind: LogKind, text: string): void {
 function addViolation(d: AppState, rule: string, detail: string): void {
   d.violations = [...d.violations, { id: nid("v"), rule, detail, at: d.now, ts: Date.now() }];
 }
+/* Account value is cash plus what the open positions are WORTH, not cash
+   plus their P&L. Conflating the two had two consequences:
+
+     · Opening a long dropped equity by the full notional, because the cash
+       left but the asset it bought was never counted back.
+     · Shorts were inverted end to end. Opening one DEBITED cash as though
+       buying, and closing one CREDITED it as though selling, so the net
+       cash movement was (exit - entry) * qty when a short earns
+       (entry - exit) * qty. A winning short reduced the account and a
+       losing short grew it, while the trade record stored the correct
+       P&L - which is why the balance disagreed with Recent Closed. */
 function recomputeEquity(d: AppState): void {
-  d.equity = d.cash + d.positions.reduce((a, p) => a + mtm(p, d.market[p.symbol].price), 0);
+  d.equity = d.cash + d.positions.reduce((a, p) => a + exposure(p, d.market[p.symbol].price), 0);
   d.peakEquity = Math.max(d.peakEquity, d.equity);
 }
 
@@ -431,7 +449,9 @@ function reducer(state: AppState, action: Action): AppState {
     case "ADJUST_BRACKET": {
       const p = d.positions.find((x) => x.id === action.id);
       if (!p) return d;
-      if (action.stop != null && p.stop != null) {
+      const stopAcceptable = action.stop == null ||
+        (p.side === "long" ? action.stop < d.market[p.symbol].price : action.stop > d.market[p.symbol].price);
+      if (action.stop != null && p.stop != null && stopAcceptable) {
         const worse = p.side === "long" ? action.stop < p.stop : action.stop > p.stop;
         if (worse) {
           p.stopMovedWorse = true;
@@ -439,9 +459,28 @@ function reducer(state: AppState, action: Action): AppState {
           toast(d, "warn", "Stop widened - logged as a violation.");
         }
       }
-      p.stop = action.stop;
-      p.target = action.target;
-      toast(d, "info", p.symbol + " bracket updated.");
+      /* A bracket level on the wrong side of price is not a level, it is
+         an instruction to close immediately. The bracket sweep runs on the
+         next tick and fires the moment target <= price for a long, so a
+         target dragged below the market closed the position at once and
+         labelled the loss "TARGET" - which reads as an engine fault rather
+         than a mis-drag, and teaches the trader nothing.
+
+         Each leg is validated independently so a bad drag on one does not
+         discard a good adjustment to the other. */
+      const px = d.market[p.symbol].price;
+      const longSide = p.side === "long";
+
+      if (action.stop != null) {
+        if (longSide ? action.stop < px : action.stop > px) p.stop = action.stop;
+        else toast(d, "warn", "Stop must sit " + (longSide ? "below" : "above") + " the market - change ignored.");
+      } else p.stop = null;
+
+      if (action.target != null) {
+        if (longSide ? action.target > px : action.target < px) p.target = action.target;
+        else toast(d, "warn", "Target must sit " + (longSide ? "above" : "below") + " the market - change ignored.");
+      } else p.target = null;
+
       return d;
     }
 
@@ -557,6 +596,23 @@ function placeOrder(d: AppState, a: Extract<Action, { type: "PLACE_ORDER" }>): v
   const violations: string[] = [];
   if (a.override) { addViolation(d, "Risk rule broken", "Oversized order placed with explicit acknowledgment."); violations.push("oversize"); }
   if (plan.forbidden.includes("no-stop") && !a.stop) { addViolation(d, "Forbidden: no-stop", "Order placed without a hard stop."); violations.push("no-stop"); toast(d, "down", "Blocked: your plan forbids trades without a stop."); return; }
+
+  /* Reject a bracket on the wrong side of the market before it is armed.
+     ADJUST_BRACKET already refuses these, but an order could still be
+     PLACED with them, and the bracket sweep would close the position on
+     the next tick - a stop below the market on a short is not a stop, it
+     is an immediate exit. Defence in depth: the ticket now recomputes the
+     levels when the side changes, and this refuses them if it ever does
+     not. */
+  const isLong = a.side === "long";
+  if (a.stop != null && (isLong ? a.stop >= refPx : a.stop <= refPx)) {
+    toast(d, "down", "Stop must sit " + (isLong ? "below" : "above") + " the market for a " + a.side + ". Order rejected.");
+    return;
+  }
+  if (a.target != null && (isLong ? a.target <= refPx : a.target >= refPx)) {
+    toast(d, "down", "Target must sit " + (isLong ? "above" : "below") + " the market for a " + a.side + ". Order rejected.");
+    return;
+  }
   if (d.positions.length >= plan.maxPositions) { toast(d, "warn", "Max positions (" + plan.maxPositions + ") reached."); return; }
   if (riskAmount > 0 && openRisk + riskAmount > (plan.maxOpenRiskPct / 100) * d.equity) { toast(d, "warn", "Max open risk exceeded - close something first."); return; }
 
@@ -590,9 +646,12 @@ function fillEntry(
   }
   if (d.friction === "brutal") fees = meta.kind === "crypto" ? fillPx * qty * 0.0006 : Math.max(1, qty * 0.005);
 
-  const cost = fillPx * qty + fees;
-  if (cost > d.cash) { toast(d, "warn", "Not enough cash for that fill."); return; }
-  d.cash -= cost;
+  /* A long pays out cash and receives an asset; a short receives proceeds
+     and owes the asset back. Both are capped at account value, so neither
+     side can take on more notional than the account can cover. */
+  const notional = fillPx * qty;
+  if (notional + fees > d.equity) { toast(d, "warn", "Not enough account value for that fill."); return; }
+  d.cash += (side === "long" ? -notional : notional) - fees;
 
   const riskAmount = trueRiskAmount(symbol, fillPx, stop, qty, d.friction);
   d.positions = [...d.positions, {
@@ -624,7 +683,10 @@ function closePosition(d: AppState, id: string, reason: Trade["exitReason"]): vo
   const net = gross - fees - pos.fees;
   const r = pos.riskAmount > 0 ? net / pos.riskAmount : 0;
 
-  d.cash += px * pos.qty;
+  /* Unwind the entry: a long sells its asset back, a short buys its back.
+     The exit commission leaves cash here too - previously it was reported
+     in the trade record but never actually charged to the account. */
+  d.cash += (pos.side === "long" ? px * pos.qty : -px * pos.qty) - fees;
   d.positions = d.positions.filter((p) => p.id !== id);
 
   const trade: Trade = {
@@ -679,7 +741,7 @@ function tick(d: AppState): AppState {
       toast(d, "warn", "STRESS EVENT - adverse move against your " + a.symbol + " position. Hold the stop.");
     }
 
-    stepTick(m, a, rnd);
+    stepMarket(m, a, rnd);
 
     if (hadStress && !m.stress) {
       const pos = d.positions.find((p) => p.symbol === a.symbol);
@@ -740,38 +802,6 @@ function tick(d: AppState): AppState {
     }
   }
   return d;
-}
-
-function stepTick(m: MarketState, a: { symbol: string; base: number; vol: number }, rnd: () => number): void {
-  let dir = m.drift;
-  let volMul = 1;
-  if (m.stress) {
-    dir = m.stress.dir * a.vol * 0.55;
-    volMul = 2.4;
-    m.stress = m.stress.left <= 1 ? null : { ...m.stress, left: m.stress.left - 1 };
-  } else if (rnd() < 0.004) {
-    m.drift = (rnd() - 0.5) * a.vol * 0.16;
-    dir = m.drift;
-  }
-  const g = () => {
-    let u = 0, v = 0;
-    while (u === 0) u = rnd();
-    while (v === 0) v = rnd();
-    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-  };
-  const price = Math.max(a.base * 0.15, m.price + dir * m.price + g() * a.vol * m.price * 0.32 * volMul);
-  m.price = price;
-  const last = m.candles[m.candles.length - 1];
-  if (rnd() < 0.16) {
-    m.candles = [...m.candles.slice(-239), { o: price, h: price, l: price, c: price, v: Math.round(rnd() * 200) }];
-    m.regime = regimeOf(m.candles);
-  } else {
-    last.c = price;
-    last.h = Math.max(last.h, price);
-    last.l = Math.min(last.l, price);
-    last.v += Math.round(rnd() * 90);
-  }
-  void CANDLE_TICKS;
 }
 
 /* ------------------------------ context ----------------------------- */

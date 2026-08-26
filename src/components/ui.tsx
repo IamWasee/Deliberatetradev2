@@ -53,6 +53,11 @@ export function Modal({ open, onClose, title, children, wide }: {
     <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 animate-fade-in"
       style={{ background: "rgba(5,9,17,0.82)" }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className={`panel relative w-full ${wide ? "max-w-2xl" : "max-w-lg"} max-h-[92vh] overflow-y-auto animate-pop`} style={{ background: "#0e1729" }}>
+        {/* The header is sticky and opaque, so it paints over anything a
+            caller positions absolutely into the title row unless that
+            element raises itself above z-10. The owner skip buttons sit
+            there; keep this comment with the z-index so the relationship
+            is discoverable from either side. */}
         <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-line sticky top-0 z-10" style={{ background: "#0e1729", borderColor: "#16213a" }}>
           <h3 className="font-display font-semibold text-[15px] text-fog-100">{title}</h3>
           <button onClick={onClose} className="text-fog-500 hover:text-fog-200 transition-colors"><Ic.x size={16} /></button>

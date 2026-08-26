@@ -18,7 +18,7 @@ export type ChartMenuAction =
   | "crosshair" | "zoomIn" | "zoomOut" | "reset"
   | "measure" | "trendLine" | "horizontalLine" | "verticalLine"
   | "priceAlert" | "indicators" | "candleDetails"
-  | "clearDrawings";
+  | "clearDrawings" | "deleteSelected";
 
 export interface MenuAnchor { x: number; y: number }
 
@@ -37,12 +37,13 @@ const ICON = 13;
 const EDGE = 6;
 
 export default function ChartContextMenu({
-  anchor, crosshairMagnet, activeTool, hasDrawings, onAction, onClose,
+  anchor, crosshairMagnet, activeTool, hasDrawings, hasSelection, onAction, onClose,
 }: {
   anchor: MenuAnchor | null;
   crosshairMagnet: boolean;
   activeTool: ChartMenuAction | null;
   hasDrawings: boolean;
+  hasSelection: boolean;
   onAction: (a: ChartMenuAction) => void;
   onClose: () => void;
 }) {
@@ -79,6 +80,7 @@ export default function ChartContextMenu({
     {
       heading: "Drawings",
       items: [
+        { id: "deleteSelected", label: "Delete Selected", icon: <Trash2 size={ICON} />, hint: "del", disabled: !hasSelection },
         { id: "clearDrawings", label: "Clear Drawings", icon: <Trash2 size={ICON} />, disabled: !hasDrawings },
       ],
     },

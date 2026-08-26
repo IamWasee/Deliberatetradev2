@@ -129,8 +129,17 @@ export async function updatePassword(password: string): Promise<Result> {
 
    The lesson generalises: RLS decides what you MAY see, not what you asked
    for. Queries must still say which row they want. */
-export async function fetchProfile(userId?: string): Promise<Profile | null> {
-  if (!hasSupabase()) return null;
+export interface ProfileFetch {
+  profile: Profile | null;
+  /** True when the round trip itself failed - offline, blocked, a blip.
+      Distinct from "the query succeeded and there is no such row", because
+      the two demand opposite responses: one means retain what we knew,
+      the other means the profile is genuinely absent. */
+  failed: boolean;
+}
+
+export async function fetchProfileResult(userId?: string): Promise<ProfileFetch> {
+  if (!hasSupabase()) return { profile: null, failed: false };
   const db = supabase();
 
   let id = userId;
@@ -138,11 +147,20 @@ export async function fetchProfile(userId?: string): Promise<Profile | null> {
     const { data: auth } = await db.auth.getUser();
     id = auth.user?.id;
   }
-  if (!id) return null;
+  if (!id) return { profile: null, failed: false };
 
-  const { data, error } = await db
-    .from("profiles").select("*").eq("id", id).maybeSingle();
-  return error ? null : ((data as Profile) ?? null);
+  try {
+    const { data, error } = await db
+      .from("profiles").select("*").eq("id", id).maybeSingle();
+    if (error) return { profile: null, failed: true };
+    return { profile: (data as Profile) ?? null, failed: false };
+  } catch {
+    return { profile: null, failed: true };
+  }
+}
+
+export async function fetchProfile(userId?: string): Promise<Profile | null> {
+  return (await fetchProfileResult(userId)).profile;
 }
 
 /** Fire-and-forget activity stamp; failure is never worth blocking a login. */
@@ -175,8 +193,24 @@ export function useAuth(): AuthState & { refresh: () => void } {
         setState({ loading: false, session: null, profile: null });
         return;
       }
-      const profile = await fetchProfile(session.user.id);
+      const { profile, failed } = await fetchProfileResult(session.user.id);
       if (!live) return;
+
+      /* A failed round trip must not revoke anything.
+
+         onAuthStateChange fires on token refresh, on tab focus and on
+         other routine events, so this path runs repeatedly through a long
+         session. Treating a transient failure as "no profile" silently
+         demoted an admin mid-session: the skip affordances vanished, the
+         enforcement gates re-engaged, and the Admin tab disappeared, with
+         nothing on screen to explain why. Privileges are dropped only on
+         an actual answer - a real sign-out, or a query that succeeded and
+         returned no row. */
+      if (failed) {
+        setState((prev) => ({ loading: false, session, profile: prev.profile }));
+        return;
+      }
+
       setCachedRole(profile?.role ?? null);
       setState({ loading: false, session, profile });
       if (profile) void touchLastSeen(profile.id);

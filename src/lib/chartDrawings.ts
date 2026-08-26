@@ -68,10 +68,86 @@ function label(c: CanvasRenderingContext2D, x: number, y: number, text: string, 
   c.fillText(text, x + 5, y);
 }
 
+/* ------------------------------ hit testing ---------------------------
+   Selection is resolved in PIXEL space even though drawings are stored in
+   chart space, because "near enough to grab" is a property of the screen:
+   a tolerance expressed in price would grow and shrink with the zoom and
+   feel different at every scale. */
+
+/** Grab radius in pixels for a line body. */
+const TOL = 6;
+/** Larger radius for endpoint handles so they win over the body. */
+const HANDLE = 9;
+
+export type HitPart = "body" | "a" | "b";
+export interface Hit { id: string; part: HitPart }
+
+function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - x1, py - y1);
+  /* Clamped projection, so the distance is to the SEGMENT rather than to
+     the infinite line it lies on. */
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+/** Topmost drawing under the cursor, or null. Iterates newest first so the
+    most recently drawn wins, matching how they are painted. */
+export function hitTest(
+  drawings: Drawing[], s: Scales, px: number, py: number,
+): Hit | null {
+  for (let i = drawings.length - 1; i >= 0; i--) {
+    const d = drawings[i];
+
+    if (d.kind === "horizontal") {
+      const y = s.y(d.a.price);
+      if (y != null && Math.abs(py - y) <= TOL) return { id: d.id, part: "body" };
+      continue;
+    }
+    if (d.kind === "vertical") {
+      const x = s.x(d.a.time);
+      if (x != null && Math.abs(px - x) <= TOL) return { id: d.id, part: "body" };
+      continue;
+    }
+    if (!d.b) continue;
+
+    const x1 = s.x(d.a.time), y1 = s.y(d.a.price);
+    const x2 = s.x(d.b.time), y2 = s.y(d.b.price);
+    if (x1 == null || y1 == null || x2 == null || y2 == null) continue;
+
+    /* Endpoints first: grabbing a handle should reshape, not translate. */
+    if (Math.hypot(px - x1, py - y1) <= HANDLE) return { id: d.id, part: "a" };
+    if (Math.hypot(px - x2, py - y2) <= HANDLE) return { id: d.id, part: "b" };
+    if (distToSegment(px, py, x1, y1, x2, y2) <= TOL) return { id: d.id, part: "body" };
+  }
+  return null;
+}
+
+/** Translate a whole drawing by a chart-space delta. */
+export function moveDrawing(d: Drawing, dt: number, dp: number): Drawing {
+  return {
+    ...d,
+    a: { time: d.a.time + dt, price: d.a.price + dp },
+    b: d.b ? { time: d.b.time + dt, price: d.b.price + dp } : undefined,
+  };
+}
+
+/** Move one endpoint to an absolute chart-space point. */
+export function reshapeDrawing(d: Drawing, part: HitPart, p: Point): Drawing {
+  if (part === "a") return { ...d, a: p };
+  if (part === "b") return { ...d, b: p };
+  return d;
+}
+
 export interface PaintOpts {
   decimals: number;
   /** Point currently under the cursor while a two-point tool is armed. */
   ghost?: { from: Point; to: Point; kind: DrawingKind } | null;
+  /** Drawing drawn with handles and emphasis. */
+  selectedId?: string | null;
+  /** Drawing under the cursor, drawn slightly brighter as a grab hint. */
+  hoverId?: string | null;
 }
 
 export function paint(
@@ -104,10 +180,16 @@ export function paint(
 
     const color = COLORS[d.kind];
     const ghost = d.id === "__ghost";
+    const selected = !ghost && d.id === opts.selectedId;
+    const hovered = !ghost && d.id === opts.hoverId;
     c.save();
     c.strokeStyle = color;
-    c.lineWidth = 1.4;
-    c.globalAlpha = ghost ? 0.65 : 1;
+    c.lineWidth = selected ? 2.2 : 1.4;
+    c.globalAlpha = ghost ? 0.65 : hovered && !selected ? 0.85 : 1;
+    if (selected) {
+      c.shadowColor = color;
+      c.shadowBlur = 8;
+    }
     if (ghost) c.setLineDash([4, 3]);
 
     if (d.kind === "horizontal") {
@@ -116,10 +198,20 @@ export function paint(
       c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
       c.setLineDash([]);
       label(c, 6, y - 11, d.a.price.toFixed(opts.decimals), color);
+      if (selected) {
+        c.shadowBlur = 0;
+        c.beginPath(); c.arc(w / 2, y, 3.2, 0, Math.PI * 2);
+        c.fillStyle = color; c.fill();
+      }
     } else if (d.kind === "vertical") {
       const x = s.x(d.a.time);
       if (x == null) { c.restore(); continue; }
       c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke();
+      if (selected) {
+        c.shadowBlur = 0;
+        c.beginPath(); c.arc(x, h / 2, 3.2, 0, Math.PI * 2);
+        c.fillStyle = color; c.fill();
+      }
     } else if (d.b) {
       const x1 = s.x(d.a.time), y1 = s.y(d.a.price);
       const x2 = s.x(d.b.time), y2 = s.y(d.b.price);
@@ -140,13 +232,24 @@ export function paint(
         label(c, Math.max(4, x2 + 8), y2,
           `${sign}${diff.toFixed(opts.decimals)}  ${sign}${pct.toFixed(2)}%`,
           diff >= 0 ? "#2fb98c" : "#e0564f");
+        if (selected) {
+          c.shadowBlur = 0;
+          for (const [hx, hy] of [[x1, y1], [x2, y2]] as const) {
+            c.beginPath(); c.arc(hx, hy, 4.2, 0, Math.PI * 2);
+            c.fillStyle = "#eef3fa"; c.fill();
+            c.strokeStyle = color; c.lineWidth = 1.6; c.stroke();
+          }
+        }
       } else {
         /* Endpoint handles, so a trend line reads as an object rather
            than an accident of the grid. */
         c.setLineDash([]);
+        c.shadowBlur = 0;
         for (const [px, py] of [[x1, y1], [x2, y2]] as const) {
-          c.beginPath(); c.arc(px, py, 2.6, 0, Math.PI * 2);
-          c.fillStyle = color; c.fill();
+          c.beginPath(); c.arc(px, py, selected ? 4.2 : 2.6, 0, Math.PI * 2);
+          c.fillStyle = selected ? "#eef3fa" : color;
+          c.fill();
+          if (selected) { c.strokeStyle = color; c.lineWidth = 1.6; c.stroke(); }
         }
       }
     }

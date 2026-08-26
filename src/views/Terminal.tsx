@@ -234,8 +234,15 @@ function EntryTicket({ gateOk, gateReason, onTradeIntent }: { gateOk: boolean; g
     setOverride(false);
     const rps = 1.5 * a;
     setQty(Math.max(1, Math.floor(plannedRisk$ / Math.max(0.0001, rps))));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.selected]);
+    /* `side` MUST stay in this list. The bracket is derived from it - stop
+       below and target above for a long, inverted for a short - so leaving
+       it out meant flipping LONG to SHORT kept the long's levels. The stop
+       then sat BELOW the market on a short, and the bracket sweep fires
+       the instant price >= stop for a short, so the position was closed on
+       the very next tick. Longs looked fine because the defaults are
+       computed for a long.
+       eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [s.selected, side]);
 
   useEffect(() => {
     const handler = () => setCheckinOpen(true);
@@ -376,7 +383,7 @@ function EmotionCheckin({ open, onClose, onSubmit, symbol, side, risk$ }: {
           onClick={() => onSubmit({ emotion: "calm", arousal: 5, thesis: "-", at: Date.now() })}
           aria-label="Skip"
           title="Skip"
-          className="absolute top-3 right-12 inline-flex items-center justify-center w-7 h-7 rounded-lg text-fog-500 transition-all hover:text-fog-100"
+          className="absolute top-3 right-12 z-20 inline-flex items-center justify-center w-7 h-7 rounded-lg text-fog-500 transition-all hover:text-fog-100"
           style={{ background: "#111b30", border: "1px solid #2a3c5e" }}>
           <Ic.x size={14} />
         </button>
