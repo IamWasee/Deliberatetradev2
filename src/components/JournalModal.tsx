@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useApp } from "../lib/store";
 import { EMOTIONS, type EmotionTag } from "../lib/types";
 import { journalGate, journalQualityScore } from "../lib/journalQuality";
-import { isAdminSession, logGate } from "../lib/admin";
+import { isAdminSession } from "../lib/admin";
 import { Bar, Ic, Modal, fmtR, fmtSigned } from "./ui";
 
 export default function JournalModal() {
@@ -24,7 +24,6 @@ export default function JournalModal() {
   useEffect(() => {
     setPlan(""); setWhat(""); setDuring("calm"); setAfter("calm");
     setFollowed(null); setRulesNote(""); setLesson(""); setGrade(null);
-    if (tradeId) logGate("post-trade journal (skip-X visible?)");
   }, [tradeId]);
 
   if (!trade) return null;

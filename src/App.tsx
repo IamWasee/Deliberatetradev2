@@ -2,7 +2,7 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AppProvider, hardReset, useApp, gateCheck } from "./lib/store";
 import { isSessionValid, touchSession, clearSession, loadAccount, maskEmail } from "./lib/auth";
 import { computeProcess } from "./lib/coaching";
-import { debugAdminAccess, isAdminSession } from "./lib/admin";
+import { isAdminSession } from "./lib/admin";
 import type { View } from "./lib/types";
 import { Flash, Gauge, Ic, Modal, Toasts, Toggle, fmtSigned } from "./components/ui";
 import { DisclaimerFooter } from "./components/LegalKit";
@@ -100,11 +100,6 @@ function Shell() {
   }, [authed]);
 
   useEffect(() => { document.title = T[view] + " - DeliberateTrade"; }, [view]);
-
-  /* post-login owner diagnostic (temporary, owner-requested) */
-  useEffect(() => {
-    if (authed) debugAdminAccess("desk-mounted");
-  }, [authed]);
 
   const acct = useMemo(() => loadAccount(), [authed]);
 

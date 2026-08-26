@@ -30,11 +30,11 @@ export default function Dashboard() {
         {/* header strip */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5 animate-fade-up">
           {[
-            { k: "Equity", v: <Flash value={s.equity} format={(n) => "$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 })} className="text-[18px] font-semibold text-fog-100" /> },
             { k: "Session P&L", v: <span className={"num text-[18px] font-semibold " + (dayPnl >= 0 ? "text-up" : "text-down")}>{fmtSigned(dayPnl, 0)}</span> },
             { k: "Realized", v: <span className={"num text-[18px] font-semibold " + (realized >= 0 ? "text-up" : "text-down")}>{fmtSigned(realized, 0)}</span> },
             { k: "Win rate", v: <span className="num text-[18px] font-semibold text-fog-100">{(winRate * 100).toFixed(0)}%</span> },
             { k: "Avg R", v: <span className={"num text-[18px] font-semibold " + (avgR >= 0 ? "text-up" : "text-down")}>{fmtR(avgR)}</span> },
+            { k: "Equity", v: <Flash value={s.equity} format={(n) => "$" + n.toLocaleString("en-US", { maximumFractionDigits: 0 })} className="text-[18px] font-semibold text-fog-100" /> },
           ].map((c, i) => (
             <div key={i} className="panel p-3.5">
               <p className="lbl mb-1">{c.k}</p>

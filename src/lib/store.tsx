@@ -24,7 +24,7 @@ import { journalGate, journalQualityScore } from "./journalQuality";
 import { sanitizeText, rateLimited } from "./auth";
 import { isValidCsrfToken, issueCsrfToken } from "./csrf";
 import { defaultIndicators, defOf, INDICATOR_DEFS } from "./indicators";
-import { isAdminSession, logGate } from "./admin";
+import { isAdminSession } from "./admin";
 
 const LS_KEY = "dt:store:v2";
 export const TICK_MS = 850;
@@ -311,7 +311,7 @@ function runTiltCheck(d: AppState): void {
   const sev = fresh.reduce((a, s) => a + s.severity, 0);
   for (const s of fresh) addViolation(d, "Tilt: " + TILT_META[s.type].label, s.detail);
   if (sev >= 2) {
-    if (!logGate("tilt cooldown")) {
+    if (!isAdminSession()) {
       const ticks = Math.min(240, 60 + 25 * sev);
       d.cooldownUntil = Math.max(d.cooldownUntil, d.now + ticks);
     }
@@ -694,7 +694,7 @@ function tick(d: AppState): AppState {
     if (loss >= limit && d.sessionStartEquity > 0) {
       d.breaches += 1;
       addViolation(d, "Daily loss limit", "Breached the " + d.plan.maxDailyLossPct + "% circuit breaker.");
-      if (!logGate("daily-loss circuit breaker (lock?)")) {
+      if (!isAdminSession()) {
         d.lock = { reason: "Daily loss limit hit: -$" + loss.toFixed(0) + " (limit -$" + limit.toFixed(0) + ").", loss };
         toast(d, "down", "CIRCUIT BREAKER - daily loss limit reached. Trading locked.");
       } else {

@@ -4,7 +4,7 @@ import { useApp, gateCheck } from "../lib/store";
 import { ASSETS, EMOTIONS, assetMeta, type Checkin, type EmotionTag, type Side } from "../lib/types";
 import { atr } from "../lib/market";
 import { computeIndicators } from "../lib/indicators";
-import { isAdminSession, logGate } from "../lib/admin";
+import { isAdminSession } from "../lib/admin";
 import TradingChart from "../components/TradingChart";
 import IndicatorsManager from "../components/Indicators";
 import { FirstTradeGate } from "../components/LegalKit";
@@ -355,7 +355,7 @@ function EmotionCheckin({ open, onClose, onSubmit, symbol, side, risk$ }: {
   const [emotion, setEmotion] = useState<EmotionTag | null>(null);
   const [arousal, setArousal] = useState(4);
   const [thesis, setThesis] = useState("");
-  useEffect(() => { if (open) { setEmotion(null); setArousal(4); setThesis(""); logGate("pre-trade check-in (skip-X visible?)"); } }, [open]);
+  useEffect(() => { if (open) { setEmotion(null); setArousal(4); setThesis(""); } }, [open]);
   const ok = !!emotion && thesis.trim().length >= 12;
   const toneFor = (t: "up" | "warn" | "down") => (t === "up" ? "#2fb98c" : t === "warn" ? "#e0a33b" : "#e0564f");
 
