@@ -12,7 +12,10 @@
    ===================================================================== */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChartContextMenu, { type ChartMenuAction, type MenuAnchor } from "./ChartContextMenu";
-import { paint, scalesOf, isTwoPoint, type Drawing, type DrawingKind, type Point } from "../lib/chartDrawings";
+import {
+  paint, scalesOf, isTwoPoint, hitTest as hitDrawing, moveDrawing, reshapeDrawing,
+  type Drawing, type DrawingKind, type Point, type Hit,
+} from "../lib/chartDrawings";
 import {
   createChart, ColorType, CrosshairMode, LineStyle,
   CandlestickSeries, LineSeries, HistogramSeries,
@@ -82,11 +85,18 @@ export default function TradingChart({
   const alertsRef = useRef<{ price: number; above: boolean }[]>([]);
   const menuPtRef = useRef<Point | null>(null);
   const [firedAlert, setFiredAlert] = useState<number | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [hoverDraw, setHoverDraw] = useState<string | null>(null);
+  /* Original drawing plus the chart-space point it was grabbed at. Deltas
+     are taken against the original rather than accumulated frame to frame,
+     so a drag cannot creep. */
+  const grabRef = useRef<null | { hit: Hit; origin: Drawing; at: Point }>(null);
 
   /* Drawings are cleared per symbol: a trend line drawn on NVDA is
      meaningless once the pane is showing BTC. */
   useEffect(() => {
     setDrawings([]); setTool(null); setDetails(null);
+    setSelected(null); setHoverDraw(null);
     pendingRef.current = null; ghostRef.current = null; alertsRef.current = [];
   }, [symbol]);
 
@@ -370,8 +380,10 @@ export default function TradingChart({
     paint(cv, drawings, scalesOf(chart, series), {
       decimals: propsRef.current.decimals,
       ghost: ghostRef.current,
+      selectedId: selected,
+      hoverId: hoverDraw,
     });
-  }, [drawings]);
+  }, [drawings, selected, hoverDraw]);
 
   useEffect(() => { repaint(); }, [repaint, live, expanded]);
 
@@ -460,6 +472,98 @@ export default function TradingChart({
       window.removeEventListener("keydown", key, true);
     };
   }, [tool, pointAt, repaint]);
+
+  /* --------------------------- editing ------------------------------- */
+  /* The overlay canvas stays pointer-events:none so it can never swallow a
+     pan, a zoom or a bracket drag. Interaction is instead read from the
+     chart element itself and hit-tested against the drawings, which keeps
+     one input path rather than two competing layers. */
+  useEffect(() => {
+    const el = wrapRef.current;
+    const chart = chartRef.current;
+    const series = candleRef.current;
+    if (!el || !chart || !series || tool) return;   // an armed tool owns the clicks
+
+    const scales = () => scalesOf(chart, series);
+
+    const local = (e: MouseEvent) => {
+      const rect = el.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    };
+
+    const down = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement).closest("[data-chart-ui]")) return;
+      /* Bracket lines win: they are live orders, and a drawing laid across
+         one must never make the stop harder to grab. */
+      const rect = el.getBoundingClientRect();
+      if (hitTest(e.clientY - rect.top)) return;
+
+      const { x, y } = local(e);
+      const hit = hitDrawing(drawings, scales(), x, y);
+      if (!hit) { setSelected(null); return; }
+
+      const at = pointAt(e.clientX, e.clientY);
+      const origin = drawings.find((d) => d.id === hit.id);
+      if (!at || !origin) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      grabRef.current = { hit, origin, at };
+      setSelected(hit.id);
+      /* Freeze the chart for the duration, exactly as the bracket drag
+         does, or the pan would fight the drag. */
+      chart.applyOptions({ handleScroll: false, handleScale: false });
+    };
+
+    const move = (e: MouseEvent) => {
+      const g = grabRef.current;
+      if (!g) {
+        if (dragRef.current) return;              // bracket drag owns the cursor
+        const { x, y } = local(e);
+        const hit = hitDrawing(drawings, scales(), x, y);
+        setHoverDraw(hit?.id ?? null);
+        if (hit) el.style.cursor = hit.part === "body" ? "move" : "grab";
+        return;
+      }
+      const p = pointAt(e.clientX, e.clientY);
+      if (!p) return;
+      const next = g.hit.part === "body"
+        ? moveDrawing(g.origin, p.time - g.at.time, p.price - g.at.price)
+        : reshapeDrawing(g.origin, g.hit.part, p);
+      setDrawings((prev) => prev.map((d) => (d.id === g.hit.id ? next : d)));
+    };
+
+    const up = () => {
+      if (!grabRef.current) return;
+      grabRef.current = null;
+      chart.applyOptions({ handleScroll: true, handleScale: true });
+      el.style.cursor = "crosshair";
+    };
+
+    const key = (e: KeyboardEvent) => {
+      if (!selected) return;
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        setDrawings((prev) => prev.filter((d) => d.id !== selected));
+        setSelected(null);
+      } else if (e.key === "Escape") {
+        e.stopPropagation();
+        setSelected(null);
+      }
+    };
+
+    el.addEventListener("mousedown", down, true);
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    window.addEventListener("keydown", key, true);
+    return () => {
+      el.removeEventListener("mousedown", down, true);
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("keydown", key, true);
+    };
+  }, [drawings, selected, tool, pointAt, hitTest]);
 
   /* Price alerts set from the menu, checked against the live price. */
   useEffect(() => {
@@ -553,12 +657,20 @@ export default function TradingChart({
         break;
       }
 
+      case "deleteSelected":
+        if (selected) {
+          setDrawings((prev) => prev.filter((d) => d.id !== selected));
+          setSelected(null);
+        }
+        break;
+
       case "clearDrawings":
         setDrawings([]); alertsRef.current = [];
-        pendingRef.current = null; ghostRef.current = null; setTool(null);
+        pendingRef.current = null; ghostRef.current = null;
+        setTool(null); setSelected(null); setHoverDraw(null);
         break;
     }
-  }, [magnet, live, onOpenIndicators]);
+  }, [magnet, live, onOpenIndicators, selected]);
 
   /* ------------------------- fullscreen handling ----------------------- */
   useEffect(() => {
@@ -600,6 +712,14 @@ export default function TradingChart({
             so panning, zooming and the stop/target drag are untouched */}
         <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none z-[5]"
           style={{ width: "100%", height: "100%" }} />
+
+        {/* selection hint - the controls are invisible otherwise */}
+        {selected && !tool && (
+          <div className="absolute bottom-2 left-2 z-20 num text-[9.5px] px-2 py-1 rounded-full pointer-events-none animate-fade-in"
+            style={{ background: "rgba(111,182,232,0.14)", border: "1px solid rgba(111,182,232,0.5)", color: "#6fb6e8" }}>
+            drag to move - drag a handle to reshape - Del to remove - Esc to deselect
+          </div>
+        )}
 
         {/* armed-tool hint */}
         {tool && (
@@ -711,6 +831,7 @@ export default function TradingChart({
         crosshairMagnet={magnet}
         activeTool={tool}
         hasDrawings={drawings.length > 0}
+        hasSelection={!!selected}
         onAction={runAction}
         onClose={() => setMenu(null)}
       />
