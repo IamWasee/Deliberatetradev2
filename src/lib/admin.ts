@@ -1,56 +1,39 @@
 /* =====================================================================
-   Owner access - developer privileges for the product owner's account.
-   Nothing in the UI labels this account; the affordances (skip buttons,
-   unpaused enforcement) simply appear for this session only.
+   Owner affordances - the cosmetic side of being an admin.
 
-   Detection is deliberately redundant: the signed-in email is resolved
-   from three independent sources (live session, stored account record,
-   and an active-email marker written at login), so no single storage
-   quirk can silently turn the owner into a normal user.
+   WHAT THIS IS FOR
+   Synchronous call sites (the store reducer, modals) need to know whether
+   the current user is an admin without awaiting a network round trip. This
+   module caches the role that the SERVER returned on the last profile load
+   and hands it back synchronously.
 
-   Note: any client-side check is readable in the bundle by design - the
-   authoritative enforcement for production data lives server-side, where
-   the same email check gates the privileged endpoints.
+   WHAT THIS IS NOT FOR
+   Authorisation. The cache lives in memory and mirrors into sessionStorage,
+   so anyone with devtools can flip it. That is acceptable only because the
+   things it gates are cosmetic: skipping your own pre-trade check-in,
+   bypassing your own tilt cooldown, dismissing your own circuit breaker.
+   Faking it lets someone waive their own training restrictions - which they
+   could achieve just as easily by clearing site data.
+
+   Every decision that protects OTHER users' data is enforced by Row Level
+   Security in Postgres (see supabase/schema.sql). Nothing in this file is
+   ever consulted for that, and forging it yields empty query results.
    ===================================================================== */
-import { loadAccount, loadSession } from "./auth";
 import { safeGet, safeSet, safeRemove } from "./safe";
 
-const OWNER_EMAIL = "abdullahwasee86@gmail.com";
-const K_ACTIVE = "dt:active_email";
+const K_ROLE = "dt:role";
 
-const norm = (v: unknown): string =>
-  typeof v === "string" ? v.trim().toLowerCase() : "";
+let cached: string | null = null;
 
-/** Case-insensitive owner check. */
-export function isAdminEmail(email: string | null | undefined): boolean {
-  return norm(email) === OWNER_EMAIL;
+/** Called by the account layer whenever a profile is loaded or cleared. */
+export function setCachedRole(role: string | null): void {
+  cached = role;
+  if (role) safeSet(K_ROLE, role);
+  else safeRemove(K_ROLE);
 }
 
-/** Written at every successful login, cleared on erase - a third, simple
-    source of truth that survives cookie/sessionStorage oddities. */
-export function setActiveEmail(email: string | null): void {
-  if (email) safeSet(K_ACTIVE, norm(email));
-  else safeRemove(K_ACTIVE);
-}
-
-export interface AdminProbe {
-  accountEmail: string | null;
-  sessionEmail: string | null;
-  activeEmail: string | null;
-  isAdmin: boolean;
-}
-
-/** Resolve the signed-in email from every source available. */
-export function probeAdminAccess(): AdminProbe {
-  const accountEmail = norm(loadAccount()?.email) || null;
-  const sessionEmail = norm(loadSession()?.email) || null;
-  const activeEmail = norm(safeGet(K_ACTIVE)) || null;
-  const isAdmin =
-    isAdminEmail(sessionEmail) || isAdminEmail(accountEmail) || isAdminEmail(activeEmail);
-  return { accountEmail, sessionEmail, activeEmail, isAdmin };
-}
-
-/** True when the currently signed-in user is the owner. */
+/** True when the signed-in user's server-issued role is admin. */
 export function isAdminSession(): boolean {
-  return probeAdminAccess().isAdmin;
+  const role = cached ?? safeGet(K_ROLE);
+  return role === "admin";
 }

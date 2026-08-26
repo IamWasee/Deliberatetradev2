@@ -71,15 +71,23 @@ const SECTIONS: Section[] = [
   },
   {
     id: "privacy", no: "09", title: "Privacy Policy", accent: A.teal,
-    paras: ["What happens to your data on DeliberateTrade:"],
+    paras: [
+      "What happens to your data on DeliberateTrade. Creating an account means we store your email on our servers; your trading activity stays on your device. The detail is below.",
+    ],
     list: [
-      "What is stored. Your trading plan, orders, positions, journals, emotional check-ins, scores, and indicator settings are stored locally in your browser on this device - nowhere else.",
-      "What is never collected. No name, email, address, payment data, or government ID is required or stored by any server. No real money ever touches the platform.",
-      "No transmission. Your data does not leave your device. There are no servers, analytics, trackers, or third-party advertising.",
-      "Your controls. Export a performance report anytime from the Readiness tab, wipe everything with the account-deletion flow, or clear your browser's site data. Deletion is immediate and permanent.",
-      "GDPR / CCPA. Because data lives only on your device, you exercise access, portability, and erasure directly through these controls - we hold nothing to request from us.",
-      "Children. The platform is not directed at minors; educational use assumes appropriate supervision.",
-      "Changes. Material changes to this policy update the effective date below.",
+      "What we collect. To create an account we collect and store on our servers: your email address, a display name if you provide one, your account tier, and the dates your account was created and last used. No address, payment card, or government ID is collected.",
+      "Your password. Your password is sent over an encrypted connection and stored only as a bcrypt hash - a one-way transformation. It cannot be reversed back into your password. Nobody can read it: not our staff, not the platform owner, and not anyone who obtained a copy of the database. When you sign in we hash what you type and compare the result. We can never email you your existing password, only a link to set a new one.",
+      "What stays on your device. Your trading plan, orders, positions, journals, emotional check-ins, scores, and indicator settings are stored in your browser on this device and are not transmitted to us. If this changes in a future release we will update this policy and tell you before it takes effect.",
+      "How we use your email. To verify your account, to sign you in, to let you reset your password, and to send service notices such as security or billing changes. We do not sell it, rent it, or use it for advertising.",
+      "Who can see your account. Platform administrators can view account records - email address, tier, and activity dates - to provide support and manage subscriptions. Administrators cannot read your password, and cannot read the contents of your journals or emotional check-ins.",
+      "Processors we use. Supabase provides our database, authentication, and verification email delivery. Netlify hosts the site. Both process data on our behalf under their own security terms. We use no analytics, trackers, or third-party advertising.",
+      "Retention. Account data is kept while your account is open. Delete your account and the record and everything linked to it is permanently removed from our database; backups age out on our provider's rolling schedule.",
+      "Your rights. You may request access to your data, a portable copy, correction, or erasure. Delete your account in-app at any time, or contact us at the address below. Depending on where you live, GDPR, UK GDPR, or CCPA/CPRA may give you additional rights, including the right to complain to your local data protection authority. We do not sell personal information as those laws define the term.",
+      "Data location. Our database and authentication are operated by Supabase and your data may be processed outside your country of residence, including in the United States.",
+      "Children. The service is not directed at children under 16, and we do not knowingly collect their data. If you believe a child has created an account, contact us and we will delete it.",
+      "Security. Connections use HTTPS, passwords are hashed, and database access rules are enforced on the server so one account cannot read another's data. No system is perfectly secure; if a breach affects your data we will notify you and the relevant authority as required by law.",
+      "Contact. Privacy requests and questions: abdullahwasee86@gmail.com",
+      "Changes. Material changes to this policy update the effective date below. Continued use after a change means you accept the updated policy.",
     ],
   },
 ];
@@ -89,7 +97,8 @@ const PLAIN = [
   { mark: A.amber, text: "Nothing on this platform is financial advice." },
   { mark: A.red, text: "Simulated profits do not predict real profits. Most retail traders lose money." },
   { mark: A.amber, text: "We hold no funds, execute no real trades, and accept no liability for real-money decisions." },
-  { mark: A.teal, text: "Your data stays in your browser. Delete it anytime - it's gone for good." },
+  { mark: A.teal, text: "We store your email to run your account. Your password is hashed - nobody here can read it." },
+  { mark: A.teal, text: "Your trades and journals stay in your browser. Delete your account anytime - it's gone for good." },
 ];
 
 export default function Legal() {
@@ -118,7 +127,7 @@ export default function Legal() {
             </span>
             <h1 className="font-display font-bold text-[26px] md:text-[30px] text-fog-100 leading-tight">Legal, Terms & Privacy</h1>
             <span className="lbl num px-2 py-1 rounded-full" style={{ fontSize: 9.5, background: "#111b30", border: "1px solid #1c2942", color: "#93a3ba" }}>
-              Effective 1 Feb 2026 - v1.0
+              Effective 26 Aug 2026 - v2.0
             </span>
           </div>
           <p className="text-[13px] text-fog-400 leading-relaxed max-w-2xl">
