@@ -1,6 +1,6 @@
 /* Terminal - the trading desk. */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useApp, gateCheck } from "../lib/store";
+import { useApp, gateCheck, trueRiskAmount } from "../lib/store";
 import { ASSETS, EMOTIONS, assetMeta, type Checkin, type EmotionTag, type Side } from "../lib/types";
 import { atr } from "../lib/market";
 import { computeIndicators } from "../lib/indicators";
@@ -244,8 +244,14 @@ function EntryTicket({ gateOk, gateReason, onTradeIntent }: { gateOk: boolean; g
 
   const riskPerShare = stop ? Math.abs(m.price - stop) : 0;
   const suggested = riskPerShare > 0 ? Math.max(1, Math.floor(plannedRisk$ / riskPerShare)) : 0;
-  const risk$ = riskPerShare * qty;
+  /* The same figure the engine will book, fees and exit slippage included -
+     so the ticket cannot promise a risk the fill will not honour. */
+  const risk$ = trueRiskAmount(s.selected, m.price, stop, qty, s.friction);
   const overPlan = risk$ > plannedRisk$ * 1.05;
+  /* How much of the risk budget is friction rather than the stop itself.
+     Above roughly a third, the trade is paying more to the house than it is
+     putting at stake on the idea. */
+  const frictionShare = risk$ > 0 ? 1 - (riskPerShare * qty) / risk$ : 0;
   const rr = stop && target && riskPerShare > 0 ? Math.abs(target - m.price) / riskPerShare : 0;
   const noStopForbidden = plan.forbidden.includes("no-stop");
   const estFee = s.friction === "brutal" ? (meta.kind === "crypto" ? m.price * qty * 0.0006 : Math.max(1, qty * 0.005)) : 0;
@@ -309,6 +315,9 @@ function EntryTicket({ gateOk, gateReason, onTradeIntent }: { gateOk: boolean; g
 
       <div className="panel-inset p-3 space-y-1.5 num text-[12px]">
         <Row k="Risk / share" v={stop ? fmtPx(riskPerShare) : "-"} />
+        {frictionShare > 0.33 && (
+          <Row k="Costs eat" v={(frictionShare * 100).toFixed(0) + "% of risk"} tone="#e0a33b" />
+        )}
         <Row k="Planned risk" v={"$" + risk$.toFixed(0) + " - " + (s.equity > 0 ? ((risk$ / s.equity) * 100).toFixed(2) : "0") + "%"}
           tone={overPlan ? "#e0564f" : "#2fb98c"} />
         <Row k="Reward : Risk" v={rr ? rr.toFixed(2) + " : 1" : "-"} />
