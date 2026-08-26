@@ -428,8 +428,13 @@ export default function TradingChart({
 
       if (isTwoPoint(kind)) {
         if (!pendingRef.current) { pendingRef.current = p; return; }
-        setDrawings((prev) => [...prev, { id: "d" + Date.now(), kind, a: pendingRef.current!, b: p }]);
+        /* Read the start point into a local BEFORE clearing the ref.
+           React runs the updater below asynchronously, so reading
+           pendingRef.current inside it would see the null assigned on the
+           next line and store a drawing with no start point. */
+        const from = pendingRef.current;
         pendingRef.current = null; ghostRef.current = null;
+        setDrawings((prev) => [...prev, { id: "d" + Date.now(), kind, a: from, b: p }]);
         setTool(null);
       } else {
         setDrawings((prev) => [...prev, { id: "d" + Date.now(), kind, a: p }]);
