@@ -15,6 +15,10 @@ import type { IChartApi, ISeriesApi, Time } from "lightweight-charts";
 
 export type DrawingKind = "trend" | "horizontal" | "vertical" | "measure";
 
+export function isTwoPoint(k: DrawingKind): boolean {
+  return k === "trend" || k === "measure";
+}
+
 export interface Point { time: number; price: number }
 export interface Drawing { id: string; kind: DrawingKind; a: Point; b?: Point }
 
@@ -92,6 +96,12 @@ export function paint(
     : drawings;
 
   for (const d of all) {
+    /* A malformed drawing must never take the desk down. The overlay is a
+       convenience; the chart underneath it is what the user is trading on,
+       so anything unpaintable is skipped rather than thrown. */
+    if (!d?.a || typeof d.a.time !== "number" || typeof d.a.price !== "number") continue;
+    if (isTwoPoint(d.kind) && (!d.b || typeof d.b.time !== "number")) continue;
+
     const color = COLORS[d.kind];
     const ghost = d.id === "__ghost";
     c.save();
@@ -144,4 +154,4 @@ export function paint(
   }
 }
 
-export const isTwoPoint = (k: DrawingKind): boolean => k === "trend" || k === "measure";
+
