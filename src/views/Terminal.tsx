@@ -122,6 +122,14 @@ export default function Terminal() {
                 }}>
                 REGIME: {m.regime.replace("-", " ").toUpperCase()}
               </span>
+              {/* A chart that stops moving with no explanation reads as a
+                  crash, so say why. */}
+              {s.paused && (
+                <span className="lbl num px-2 py-1 rounded-md animate-pop"
+                  style={{ fontSize: 9.5, background: "rgba(224,163,59,0.14)", border: "1px solid rgba(224,163,59,0.55)", color: "#e0a33b" }}>
+                  MARKET PAUSED - DECIDE
+                </span>
+              )}
             </div>
             <TradingChart
               symbol={s.selected}
@@ -155,6 +163,7 @@ export default function Terminal() {
         </div>
       </div>
 
+      <MarketPause active={disclaimerPending} />
       <IndicatorsManager open={indOpen} onClose={() => setIndOpen(false)} />
       <FirstTradeGate
         attempt={disclaimerPending}
@@ -163,6 +172,18 @@ export default function Terminal() {
       />
     </div>
   );
+}
+
+/* Holds the market clock while `active`. Rendered rather than called so the
+   pause is tied to a component's lifetime and is released on unmount. */
+function MarketPause({ active }: { active: boolean }) {
+  const { dispatch } = useApp();
+  useEffect(() => {
+    if (!active) return;
+    dispatch({ type: "SET_PAUSED", paused: true });
+    return () => dispatch({ type: "SET_PAUSED", paused: false });
+  }, [active, dispatch]);
+  return null;
 }
 
 function TerminalSkeleton() {
@@ -249,6 +270,24 @@ function EntryTicket({ gateOk, gateReason, onTradeIntent }: { gateOk: boolean; g
     window.addEventListener("dt:open-checkin", handler);
     return () => window.removeEventListener("dt:open-checkin", handler);
   }, []);
+
+  /* Freeze the tape while the check-in is open.
+
+     The point of the check-in is to make the trader name their state
+     before committing, but the market kept running while they typed, so
+     an honest answer cost them the entry - which taught people to rush it
+     or resent it. Pausing removes that cost: the price they decided on is
+     the price they get.
+
+     Driven by an effect with cleanup rather than by the open/close
+     handlers, so the clock restarts however the modal goes away -
+     submitted, dismissed, or unmounted by a symbol switch. A pause that
+     leaks would look exactly like a frozen app. */
+  useEffect(() => {
+    if (!checkinOpen) return;
+    dispatch({ type: "SET_PAUSED", paused: true });
+    return () => dispatch({ type: "SET_PAUSED", paused: false });
+  }, [checkinOpen, dispatch]);
 
   const riskPerShare = stop ? Math.abs(m.price - stop) : 0;
   const suggested = riskPerShare > 0 ? Math.max(1, Math.floor(plannedRisk$ / riskPerShare)) : 0;

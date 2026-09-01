@@ -47,6 +47,11 @@ export interface AppState {
   breaches: number; stressSeen: number; stressSurvived: number; lossStreak: number;
   tiltHandled: string[];
   tourDone: boolean; tourOpen: boolean;
+  /** Market clock halted. Set while a decision modal is open so the tape
+      cannot run away underneath the trader. Never persisted: a paused flag
+      restored from storage would freeze the desk on load with nothing on
+      screen to explain it. */
+  paused: boolean;
   legalAcceptedAt: number; tradeDisclaimerShown: boolean;
   indicators: ActiveIndicator[];
   market: Record<string, MarketState>;
@@ -72,6 +77,7 @@ export type Action =
   | { type: "RESOLVE_REVIEW"; id: string; again: boolean }
   | { type: "DISMISS_TOAST"; id: string }
   | { type: "RESET_ALL" }
+  | { type: "SET_PAUSED"; paused: boolean }
   | { type: "OPEN_TOUR"; open: boolean }
   | { type: "TOUR_FINISHED" }
   | { type: "SET_INDICATORS"; indicators: ActiveIndicator[] }
@@ -87,7 +93,7 @@ function freshState(): AppState {
     violations: [], news: [], log: [], toasts: [], journalDue: [],
     lock: null, cooldownUntil: 0, tiltReason: null,
     breaches: 0, stressSeen: 0, stressSurvived: 0, lossStreak: 0,
-    tiltHandled: [], tourDone: false, tourOpen: false,
+    tiltHandled: [], tourDone: false, tourOpen: false, paused: false,
     legalAcceptedAt: 0, tradeDisclaimerShown: false,
     indicators: defaultIndicators(),
     market: createMarket(1), seed: 1, now: 0, lastNewsTick: 0,
@@ -263,7 +269,11 @@ function loadState(): AppState {
     if (arr(saved.orders).length > 0)
       s.log = [{ id: nid("lg"), kind: "system", text: "Open orders were cancelled when the session reloaded.", tick: 0, ts: Date.now() }, ...s.log];
 
-    s.equity = s.cash + s.positions.reduce((a, p) => a + mtm(p, market[p.symbol].price), 0);
+    /* exposure(), not mtm() - account value is cash plus what the open
+       positions are WORTH. This line was missed when recomputeEquity was
+       corrected, so a reload with a position open recomputed the balance
+       with the old, inverted-for-shorts arithmetic. */
+    s.equity = s.cash + s.positions.reduce((a, p) => a + exposure(p, market[p.symbol].price), 0);
     s.peakEquity = Math.max(s.peakEquity, s.equity);
     if (s.plan) s.sessionStartEquity = s.equity;
     if (!s.missions.length && s.plan) s.missions = generateMissions("adherence", s.plan.setups);
@@ -398,7 +408,11 @@ function reducer(state: AppState, action: Action): AppState {
   }
 
   switch (action.type) {
-    case "TICK": return tick(d);
+    /* Returning the state unchanged rather than skipping the dispatch keeps
+       the pause in one place: prices, the session clock, cooldown timers,
+       resting orders and bracket sweeps all advance from here, so they all
+       stop together and none can drift out of step with the others. */
+    case "TICK": return d.paused ? d : tick(d);
 
     case "SELECT": { d.selected = action.symbol; return d; }
 
@@ -572,6 +586,7 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...freshState(), hydrated: true };
     }
 
+    case "SET_PAUSED": { d.paused = action.paused; return d; }
     case "OPEN_TOUR": { d.tourOpen = action.open; return d; }
     case "TOUR_FINISHED": { d.tourOpen = false; d.tourDone = true; return d; }
     case "SET_INDICATORS": { d.indicators = sanitizeIndicators(action.indicators); return d; }
