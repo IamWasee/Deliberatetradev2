@@ -1,7 +1,7 @@
 /* Terminal - the trading desk. */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useApp, gateCheck, trueRiskAmount } from "../lib/store";
-import { ASSETS, EMOTIONS, assetMeta, type Checkin, type EmotionTag, type Side } from "../lib/types";
+import { ASSETS, assetMeta, type Checkin, type Side } from "../lib/types";
 import { atr } from "../lib/market";
 import { computeIndicators } from "../lib/indicators";
 import { isAdminSession } from "../lib/admin";
@@ -159,7 +159,7 @@ export default function Terminal() {
       <FirstTradeGate
         attempt={disclaimerPending}
         clear={() => setDisclaimerPending(false)}
-        proceed={() => window.dispatchEvent(new CustomEvent("dt:open-checkin"))}
+        proceed={() => window.dispatchEvent(new CustomEvent("dt:place-order"))}
       />
     </div>
   );
@@ -222,7 +222,6 @@ function EntryTicket({ gateOk, gateReason, onTradeIntent }: { gateOk: boolean; g
   const [target, setTarget] = useState<number | null>(null);
   const [setup, setSetup] = useState(plan.setups[0] ?? "Breakout");
   const [override, setOverride] = useState(false);
-  const [checkinOpen, setCheckinOpen] = useState(false);
 
   useEffect(() => {
     const px = s.market[s.selected].price;
@@ -244,11 +243,12 @@ function EntryTicket({ gateOk, gateReason, onTradeIntent }: { gateOk: boolean; g
        eslint-disable-next-line react-hooks/exhaustive-deps */
   }, [s.selected, side]);
 
+  /* Fired by the first-trade legal gate once the disclosure is accepted. */
   useEffect(() => {
-    const handler = () => setCheckinOpen(true);
-    window.addEventListener("dt:open-checkin", handler);
-    return () => window.removeEventListener("dt:open-checkin", handler);
-  }, []);
+    const handler = () => place();
+    window.addEventListener("dt:place-order", handler);
+    return () => window.removeEventListener("dt:place-order", handler);
+  });
 
   const riskPerShare = stop ? Math.abs(m.price - stop) : 0;
   const suggested = riskPerShare > 0 ? Math.max(1, Math.floor(plannedRisk$ / riskPerShare)) : 0;
@@ -265,13 +265,25 @@ function EntryTicket({ gateOk, gateReason, onTradeIntent }: { gateOk: boolean; g
   const estFee = s.friction === "brutal" ? (meta.kind === "crypto" ? m.price * qty * 0.0006 : Math.max(1, qty * 0.005)) : 0;
   const valid = qty > 0 && (!noStopForbidden ? true : !!stop) && gateOk;
 
-  const begin = () => {
-    if (s.tradeDisclaimerShown) setCheckinOpen(true);
-    else onTradeIntent();
-  };
-  const submit = (checkin: Checkin) => {
+  /* Instant trading: the order goes straight in.
+
+     Checkin is still populated because the trade record, the coaching
+     engine and the admin console all read it - emptying the shape would
+     break those rather than simply leaving them unfed. "neutral" is the
+     honest value for a state the trader was never asked about, and it is
+     not in the risky set (fomo / revenge / bored), so it cannot fabricate
+     a tilt signal the trader never reported. */
+  const place = () => {
+    const checkin: Checkin = { emotion: "calm", arousal: 4, thesis: "", at: Date.now() };
     dispatch({ type: "PLACE_ORDER", symbol: s.selected, orderType: "market", side, qty, trigger: null, stop, target, setup, checkin, override });
-    setCheckinOpen(false);
+  };
+
+  const begin = () => {
+    /* The one-off legal acknowledgement still stands. It appears once per
+       account, is a disclosure rather than training friction, and is not
+       what "instant trading" is asking to remove. */
+    if (s.tradeDisclaimerShown) place();
+    else onTradeIntent();
   };
 
   return (
@@ -346,11 +358,10 @@ function EntryTicket({ gateOk, gateReason, onTradeIntent }: { gateOk: boolean; g
       <button className={"btn w-full " + (side === "long" ? "btn-teal" : "btn-down")} style={{ padding: "10px 14px", fontSize: 13.5 }}
         disabled={!valid || (overPlan && !override)}
         onClick={begin}>
-        <Ic.brain size={15} /> Check in & place order
+        <Ic.zap size={15} /> Place order
       </button>
       {!gateOk && <p className="text-[11px] text-down text-center -mt-1">{gateReason}</p>}
 
-      <EmotionCheckin open={checkinOpen} onClose={() => setCheckinOpen(false)} onSubmit={submit} symbol={s.selected} side={side} risk$={risk$} />
     </div>
   );
 }
@@ -366,69 +377,6 @@ const Row = ({ k, v, tone, muted }: { k: string; v: string; tone?: string; muted
 );
 
 /* -------------------------- emotional check-in ------------------------ */
-function EmotionCheckin({ open, onClose, onSubmit, symbol, side, risk$ }: {
-  open: boolean; onClose: () => void; onSubmit: (c: Checkin) => void; symbol: string; side: Side; risk$: number;
-}) {
-  const [emotion, setEmotion] = useState<EmotionTag | null>(null);
-  const [arousal, setArousal] = useState(4);
-  const [thesis, setThesis] = useState("");
-  useEffect(() => { if (open) { setEmotion(null); setArousal(4); setThesis(""); } }, [open]);
-  const ok = !!emotion && thesis.trim().length >= 12;
-  const toneFor = (t: "up" | "warn" | "down") => (t === "up" ? "#2fb98c" : t === "warn" ? "#e0a33b" : "#e0564f");
-
-  return (
-    <Modal open={open} onClose={onClose} title={<span className="flex items-center gap-2"><span className="text-teal inline-flex"><Ic.brain size={16} /></span> Pre-trade emotional check-in</span>}>
-      {isAdminSession() && (
-        <button
-          onClick={() => onSubmit({ emotion: "calm", arousal: 5, thesis: "-", at: Date.now() })}
-          aria-label="Skip"
-          title="Skip"
-          className="absolute top-3 right-12 z-20 inline-flex items-center justify-center w-7 h-7 rounded-lg text-fog-500 transition-all hover:text-fog-100"
-          style={{ background: "#111b30", border: "1px solid #2a3c5e" }}>
-          <Ic.x size={14} />
-        </button>
-      )}
-      <p className="text-[12.5px] text-fog-400 leading-relaxed mb-4">
-        Mandatory before every order. Name the state honestly - the platform correlates this with your expectancy over time.
-        <span className="num text-fog-300"> {side.toUpperCase()} {symbol} - risking ${risk$.toFixed(0)}.</span>
-      </p>
-      <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5 mb-5">
-        {EMOTIONS.map((e) => (
-          <button key={e.id} onClick={() => setEmotion(e.id)}
-            className="py-2 px-1 rounded-lg text-[10.5px] font-semibold transition-all duration-150 leading-tight"
-            style={{
-              background: emotion === e.id ? toneFor(e.tone) + "22" : "#0a1120",
-              border: "1px solid " + (emotion === e.id ? toneFor(e.tone) : "#1c2942"),
-              color: emotion === e.id ? toneFor(e.tone) : "#93a3ba",
-              transform: emotion === e.id ? "translateY(-1px)" : undefined,
-            }}>{e.label}</button>
-        ))}
-      </div>
-      <div className="mb-5">
-        <div className="flex justify-between items-baseline mb-1.5">
-          <label className="lbl">Arousal level</label>
-          <span className="num text-[13px] text-teal">{arousal}/10</span>
-        </div>
-        <input type="range" min={1} max={10} value={arousal} onChange={(e) => setArousal(Number(e.target.value))} className="w-full" />
-        <div className="flex justify-between text-[10px] text-fog-600 mt-1"><span>ice cold</span><span>heart racing</span></div>
-      </div>
-      <div className="mb-5">
-        <label className="lbl block mb-1.5">Why this trade - one honest sentence (min 12 chars)</label>
-        <textarea className="field min-h-[64px] resize-none" placeholder="e.g. Pullback to the 20MA inside an uptrend, stop under the swing low..."
-          value={thesis} onChange={(e) => setThesis(e.target.value)} />
-      </div>
-      <button className="btn btn-teal w-full" style={{ padding: "10px 14px" }} disabled={!ok}
-        onClick={() => onSubmit({ emotion: emotion!, arousal, thesis: thesis.trim(), at: Date.now() })}>
-        Checked in - submit order
-      </button>
-      {emotion && (emotion === "fomo" || emotion === "revenge" || emotion === "bored") && (
-        <p className="text-[11.5px] text-amber mt-3 leading-snug flex gap-1.5"><span className="inline-flex shrink-0 mt-0.5"><Ic.alert size={13} /></span>
-          Self-reported {emotion === "bored" ? "boredom" : emotion}. The best trade from this state is usually no trade.</p>
-      )}
-    </Modal>
-  );
-}
-
 /* ---------------------------- manage position ------------------------- */
 function ManagePanel({ posId }: { posId: string }) {
   const { state: s, dispatch } = useApp();
@@ -461,9 +409,6 @@ function ManagePanel({ posId }: { posId: string }) {
         <Row k="Open R" v={fmtR(rNow)} tone={rNow >= 0 ? "#2fb98c" : "#e0564f"} />
         <Row k="Planned risk" v={"$" + pos.riskAmount.toFixed(0) + " (" + pos.riskPct.toFixed(2) + "%)"} />
         <Row k="Setup - regime" v={pos.setup + " - " + pos.regime} muted />
-        <div className="pt-1 border-t text-[11px] text-fog-500" style={{ fontFamily: "var(--font-body)", borderColor: "#16213a" }}>
-          Checked in as <strong className="text-fog-300">{EMOTIONS.find((e) => e.id === pos.checkin.emotion)?.label}</strong> - "{pos.checkin.thesis.slice(0, 72)}{pos.checkin.thesis.length > 72 ? "..." : ""}"
-        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2">
